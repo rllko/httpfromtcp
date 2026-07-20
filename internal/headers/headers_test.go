@@ -65,8 +65,7 @@ func TestParseHeader(t *testing.T) {
 }
 
 // Edge-case tests from EDGE_CASES.md §E2 — Headers.
-// Tests marked "⚠ BUG" assert the CORRECT behavior and are expected to fail
-// until the corresponding bug in headers.go is fixed.
+// All catalog bugs are fixed; these tests now pin the correct behavior.
 
 func TestParseNoSpaceAfterColon(t *testing.T) {
 	headers := NewHeaders()

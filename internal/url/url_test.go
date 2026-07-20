@@ -109,17 +109,12 @@ func TestParseRejectsEncodedNul(t *testing.T) {
 }
 
 func TestParseRejectsRawNul(t *testing.T) {
-	// Same policy, unescaped form — this is why the NUL check runs AFTER
-	// decoding, so both spellings are caught by one rule.
 	u, err := Parse([]byte("/a\x00b"))
 	require.Error(t, err)
 	assert.Nil(t, u)
 }
 
 func TestParseRejectsEncodedSlash(t *testing.T) {
-	// Policy: an encoded '/' would forge a segment boundary once decoded.
-	// Both hex spellings must be rejected — %2F is well-formed, we refuse it
-	// deliberately (see LEARNING.md M1).
 	u, err := Parse([]byte("/a%2fb"))
 	require.Error(t, err)
 	assert.Nil(t, u)
@@ -130,129 +125,7 @@ func TestParseRejectsEncodedSlash(t *testing.T) {
 }
 
 func TestParseAllowsNormalSlashes(t *testing.T) {
-	// The encoded-slash policy must not reject ordinary paths.
 	u, err := Parse([]byte("/a/b/c"))
 	require.NoError(t, err)
 	assert.Equal(t, "/a/b/c", u.Path)
-}
-
-// RFC 9110 §5.6.4:
-//
-//	quoted-string = DQUOTE *( qdtext / quoted-pair ) DQUOTE
-//	quoted-pair   = "\" ( HTAB / SP / VCHAR / obs-text )
-//
-// A backslash escapes the NEXT BYTE LITERALLY — there are no letter-escapes
-// like JSON's \n or \t. `\n` means the letter n.
-
-func TestParseQuotedSimple(t *testing.T) {
-	parsed, n, err := ParseQuoted(`"abc"`)
-	require.NoError(t, err)
-	assert.Equal(t, "abc", parsed)
-	assert.Equal(t, 5, n, "n counts both quotes")
-}
-
-func TestParseQuotedEmpty(t *testing.T) {
-	parsed, n, err := ParseQuoted(`""`)
-	require.NoError(t, err)
-	assert.Equal(t, "", parsed)
-	assert.Equal(t, 2, n)
-}
-
-func TestParseQuotedEscapedQuote(t *testing.T) {
-	parsed, n, err := ParseQuoted(`"a\"b"`)
-	require.NoError(t, err)
-	assert.Equal(t, `a"b`, parsed)
-	assert.Equal(t, 6, n)
-}
-
-func TestParseQuotedEscapedBackslash(t *testing.T) {
-	parsed, _, err := ParseQuoted(`"a\\b"`)
-	require.NoError(t, err)
-	assert.Equal(t, `a\b`, parsed)
-}
-
-func TestParseQuotedEscapedOrdinaryChar(t *testing.T) {
-	// Escaping a plain char is legal; the backslash is dropped, the char kept.
-	parsed, _, err := ParseQuoted(`"a\bc"`)
-	require.NoError(t, err)
-	assert.Equal(t, "abc", parsed)
-}
-
-func TestParseQuotedBackslashNIsLetterN(t *testing.T) {
-	// NOT a newline — this is the JSON habit the RFC does not share.
-	parsed, _, err := ParseQuoted(`"a\nb"`)
-	require.NoError(t, err)
-	assert.Equal(t, "anb", parsed)
-
-	// Same for \t: the letter t, not a tab.
-	parsed, _, err = ParseQuoted(`"a\tb"`)
-	require.NoError(t, err)
-	assert.Equal(t, "atb", parsed)
-}
-
-func TestParseQuotedPreservesWhitespace(t *testing.T) {
-	parsed, _, err := ParseQuoted(`"  a  b  "`)
-	require.NoError(t, err)
-	assert.Equal(t, "  a  b  ", parsed)
-}
-
-func TestParseQuotedDelimitersAreLiteralInside(t *testing.T) {
-	// The M3 case: ';' and ',' inside quotes are data, not separators.
-	parsed, _, err := ParseQuoted(`"a;b,c"`)
-	require.NoError(t, err)
-	assert.Equal(t, "a;b,c", parsed)
-}
-
-func TestParseQuotedReportsRemainder(t *testing.T) {
-	// M3 needs to keep parsing after the string ends: n says where it stopped.
-	input := `"0.5"; charset=utf-8`
-	parsed, n, err := ParseQuoted(input)
-	require.NoError(t, err)
-	assert.Equal(t, "0.5", parsed)
-	assert.Equal(t, `"0.5"`, input[:n])
-	assert.Equal(t, "; charset=utf-8", input[n:])
-}
-
-func TestParseQuotedStopsAtFirstUnescapedQuote(t *testing.T) {
-	parsed, n, err := ParseQuoted(`"ab"cd`)
-	require.NoError(t, err)
-	assert.Equal(t, "ab", parsed)
-	assert.Equal(t, "cd", `"ab"cd`[n:])
-}
-
-func TestParseQuotedNoOpeningQuote(t *testing.T) {
-	_, n, err := ParseQuoted(`abc`)
-	require.Error(t, err)
-	assert.Equal(t, 0, n)
-}
-
-func TestParseQuotedUnterminated(t *testing.T) {
-	_, n, err := ParseQuoted(`"abc`)
-	require.Error(t, err)
-	assert.Equal(t, 0, n)
-}
-
-func TestParseQuotedTrailingEscape(t *testing.T) {
-	// Backslash with nothing after it: the closing quote never arrives.
-	_, _, err := ParseQuoted(`"abc\`)
-	require.Error(t, err)
-}
-
-func TestParseQuotedEscapedControlChar(t *testing.T) {
-	// quoted-pair allows HTAB/SP/VCHAR/obs-text — not control characters.
-	_, _, err := ParseQuoted("\"a\\\x00b\"")
-	require.Error(t, err)
-
-	// But an escaped real tab IS legal.
-	parsed, _, err := ParseQuoted("\"a\\\tb\"")
-	require.NoError(t, err)
-	assert.Equal(t, "a\tb", parsed)
-}
-
-func TestParseQuotedTooShort(t *testing.T) {
-	_, _, err := ParseQuoted(`"`)
-	require.Error(t, err)
-
-	_, _, err = ParseQuoted(``)
-	require.Error(t, err)
 }

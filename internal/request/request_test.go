@@ -117,8 +117,7 @@ func TestParseBody(t *testing.T) {
 
 // Edge-case tests from EDGE_CASES.md §E1 (request line), §E3 (body/Content-Length)
 // and §E4 (RequestFromReader loop).
-// Tests marked "⚠ BUG" assert the CORRECT behavior and are expected to fail
-// until the corresponding bug in request.go is fixed.
+// All catalog bugs are fixed; these tests now pin the correct behavior.
 
 // parseWithTimeout guards against the parser hanging (see §E4 fixed-buffer bug):
 // a hang becomes a test failure instead of a stuck `go test`.
@@ -157,7 +156,7 @@ func TestRequestTargetWithQueryString(t *testing.T) {
 }
 
 func TestRequestLineAsteriskForm(t *testing.T) {
-	// ⚠ BUG: the temporary GET/POST method whitelist rejects OPTIONS.
+	// A method is any RFC 9110 token — asterisk-form OPTIONS included.
 	reader := &chunkReader{
 		data:            "OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n",
 		numBytesPerRead: 1,
@@ -170,8 +169,7 @@ func TestRequestLineAsteriskForm(t *testing.T) {
 }
 
 func TestRequestLineCustomTokenMethod(t *testing.T) {
-	// ⚠ BUG: any RFC 9110 token is a valid method; the temporary GET/POST
-	// whitelist rejects PURGE.
+	// Any RFC 9110 token is a valid method — no whitelist.
 	reader := &chunkReader{
 		data:            "PURGE /cache HTTP/1.1\r\nHost: x\r\n\r\n",
 		numBytesPerRead: 3,
@@ -279,42 +277,39 @@ func TestContentLengthExtraBytesNotInBody(t *testing.T) {
 }
 
 func TestContentLengthNonNumeric(t *testing.T) {
-	// ⚠ BUG: getInt silently falls back to 0 on Atoi failure, so a non-numeric
-	// Content-Length is treated as "no body" — a request-smuggling vector.
-	// Must be a 400-class error.
+	// A non-numeric Content-Length is a 400-class error, never a silent
+	// "no body" — that silent fallback is a request-smuggling vector.
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\nhello"))
 	require.Error(t, err)
 }
 
 func TestContentLengthTrailingJunk(t *testing.T) {
-	// ⚠ BUG: same silent-zero fallback.
+	// Trailing junk after the digits is rejected.
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: 5x\r\n\r\nhello"))
 	require.Error(t, err)
 }
 
 func TestContentLengthNegative(t *testing.T) {
-	// ⚠ BUG: negative value currently treated as "no body".
+	// Negative values are rejected: the grammar is 1*DIGIT.
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\nhello"))
 	require.Error(t, err)
 }
 
 func TestContentLengthPlusPrefixed(t *testing.T) {
-	// ⚠ BUG: Atoi accepts a leading '+' but RFC 9110 is digit-only.
+	// Atoi would accept a leading '+' but RFC 9110 is digit-only.
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\nhello"))
 	require.Error(t, err)
 }
 
 func TestContentLengthOverflow(t *testing.T) {
-	// ⚠ BUG: overflow must be an error, currently silent-zero.
+	// Overflow is an error, never a wrap or silent zero.
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551616\r\n\r\nhello"))
 	require.Error(t, err)
 }
 
 func TestContentLengthDuplicateIdentical(t *testing.T) {
-	// ⚠ BUG: duplicate identical Content-Length headers get merged to "5, 5"
-	// which fails Atoi → silent zero. RFC 9110 §8.6 allows treating identical
-	// duplicates as one value (or rejecting — but never silently ignoring the
-	// body).
+	// Duplicate identical Content-Length headers (merged to "5, 5" by the
+	// header map) collapse to one value per RFC 9110 §8.6.
 	r, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
@@ -322,7 +317,7 @@ func TestContentLengthDuplicateIdentical(t *testing.T) {
 }
 
 func TestContentLengthConflicting(t *testing.T) {
-	// ⚠ BUG: conflicting values MUST be rejected (RFC 9112 §6.3).
+	// Conflicting values MUST be rejected (RFC 9112 §6.3).
 	_, err := parseWithTimeout(t, strings.NewReader("POST /submit HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhelloX"))
 	require.Error(t, err)
 }
@@ -363,9 +358,8 @@ func TestEOFMidBody(t *testing.T) {
 }
 
 func TestReaderReturningDataWithEOF(t *testing.T) {
-	// ⚠ BUG: io.Reader is allowed to return (n > 0, io.EOF) on the final read.
-	// RequestFromReader currently returns the error before parsing those last
-	// n bytes, dropping a complete request.
+	// io.Reader may return (n > 0, io.EOF) in one call; the final bytes
+	// must be parsed before the error is judged.
 	data := "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 	r, err := parseWithTimeout(t, iotest.DataErrReader(strings.NewReader(data)))
 	require.NoError(t, err)
@@ -388,10 +382,8 @@ func TestHalfReader(t *testing.T) {
 }
 
 func TestRequestLargerThanInternalBuffer(t *testing.T) {
-	// ⚠ BUG: RequestFromReader uses a fixed 1024-byte buffer. Once it fills
-	// with an incomplete header line, Read(buf[1024:]) is a zero-length read
-	// and the loop spins forever. parseWithTimeout converts the hang into a
-	// failure.
+	// The read buffer grows when full; requests larger than the initial
+	// 1024 bytes parse fine. parseWithTimeout stays as a hang tripwire.
 	big := strings.Repeat("a", 2000)
 	data := "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n"
 	r, err := parseWithTimeout(t, strings.NewReader(data))
@@ -403,10 +395,9 @@ func TestRequestLargerThanInternalBuffer(t *testing.T) {
 }
 
 func TestChunkedTransferEncoding(t *testing.T) {
-	// ⚠ BUG (until M5): a chunked request body is currently ignored silently —
-	// hasBody() only looks at Content-Length, so the request "succeeds" with
-	// an empty body. Acceptable outcomes: an error (501 Not Implemented until
-	// M5 lands) or, after M5, the decoded body. Silent data loss is neither.
+	// Until the M5 decoder lands, Transfer-Encoding is refused with an
+	// error (501-shape); after M5 the decoded body is the expectation.
+	// Silent body drop is never acceptable.
 	data := "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" +
 		"5\r\nhello\r\n0\r\n\r\n"
 	r, err := parseWithTimeout(t, strings.NewReader(data))
@@ -431,4 +422,30 @@ func TestParseEmptyInputIsNoop(t *testing.T) {
 	n, err := r.parse([]byte{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
+}
+
+// --- M4: Host header enforcement (RFC 9112 §3.2) ---
+
+func TestMissingHostHeader(t *testing.T) {
+	// HTTP/1.1 requires a Host header; a request without one is a 400.
+	_, err := parseWithTimeout(t, strings.NewReader("GET / HTTP/1.1\r\nAccept: */*\r\n\r\n"))
+	require.ErrorIs(t, err, ErrorMissingHost)
+}
+
+func TestDuplicateHostHeader(t *testing.T) {
+	// Two Host headers are a 400 even when identical. The header map merges
+	// them with ", " and a valid host can never contain a comma.
+	_, err := parseWithTimeout(t, strings.NewReader("GET / HTTP/1.1\r\nHost: a.com\r\nHost: b.com\r\n\r\n"))
+	require.ErrorIs(t, err, ErrorDuplicateHost)
+}
+
+func TestInvalidHostHeader(t *testing.T) {
+	_, err := parseWithTimeout(t, strings.NewReader("GET / HTTP/1.1\r\nHost: ex ample.com\r\n\r\n"))
+	require.Error(t, err)
+}
+
+func TestValidIPv6HostHeader(t *testing.T) {
+	r, err := parseWithTimeout(t, strings.NewReader("GET / HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n"))
+	require.NoError(t, err)
+	require.NotNil(t, r)
 }

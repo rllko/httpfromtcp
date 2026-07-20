@@ -68,6 +68,7 @@ func main() {
 	server, err := server.Serve(port, func(w response.Writer, req *request.Request) {
 		body := respond200()
 		h := response.GetDefaultHeaders(0)
+		h.Replace("content-type", "text/html")
 		status := response.StatusOK
 
 		if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin/") {
@@ -103,12 +104,11 @@ func main() {
 					fullBody = append(fullBody, data[:n]...)
 					w.WriteChunkedBody(data[:n])
 				}
-				w.WriteChunkedBodyDone()
 				tailers := headers.NewHeaders()
 				shaSig := sha256.Sum256(fullBody)
 				tailers.Set("X-Content-SHA256", toStr(shaSig[:]))
 				tailers.Set("X-Content-Length", fmt.Sprintf("%x", len(fullBody)))
-				w.WriteHeaders(tailers)
+				w.WriteTrailers(tailers)
 				return
 			}
 		} else {

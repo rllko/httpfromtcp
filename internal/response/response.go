@@ -78,6 +78,10 @@ func (w *Writer) WriteBody(body []byte) (int, error) {
 }
 
 func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
 	_, err := fmt.Fprintf(w.writer, "%x\r\n", len(p))
 	if err != nil {
 		return 0, err
@@ -92,12 +96,15 @@ func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
 	return n, err
 }
 
+// RFC 9112 7.1
 func (w *Writer) WriteChunkedBodyDone() (int, error) {
-	n, err := w.writer.Write([]byte("0\r\n"))
+	n, err := w.writer.Write([]byte("0\r\n\r\n"))
 	return n, err
 }
 
 func (w *Writer) WriteTrailers(h *headers.Headers) error {
-	err := w.WriteHeaders(h)
-	return err
+	if _, err := w.writer.Write([]byte("0\r\n")); err != nil {
+		return err
+	}
+	return w.WriteHeaders(h)
 }

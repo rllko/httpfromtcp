@@ -14,11 +14,8 @@ type URL struct {
 }
 
 var (
-	ErrMissingOpeningQuote = errors.New("string must start with a double quote")
-	ErrMissingClosingQuote = errors.New("missing closing quote")
-	ErrInvalidEscape       = errors.New("invalid escape sequence")
-	ErrIlegalEncodedSlash  = errors.New("encoded slash is not legal")
-	ErrInvalidPath         = errors.New("invalid path")
+	ErrIlegalEncodedSlash = errors.New("encoded slash is not legal")
+	ErrInvalidPath        = errors.New("invalid path")
 )
 
 func Parse(s []byte) (*URL, error) {
@@ -100,41 +97,4 @@ func hex(hi, lo byte) (byte, bool) {
 	}
 
 	return a*16 + b, true
-}
-
-func ParseQuoted(s string) (parsed string, n int, err error) {
-	if len(s) < 2 || s[0] != '"' {
-		return "", 0, ErrMissingOpeningQuote
-	}
-
-	var sb strings.Builder
-	sb.Grow(len(s))
-
-	inEscape := false
-
-	for i := 1; i < len(s); i++ {
-		b := s[i]
-
-		if inEscape {
-			if (b < 0x20 || b == 0x7F) && b != '\t' {
-				return "", 0, fmt.Errorf("%w: 0x%02X", ErrInvalidEscape, b)
-			}
-			sb.WriteByte(b)
-			inEscape = false
-			continue
-		}
-
-		if b == '\\' {
-			inEscape = true
-			continue
-		}
-
-		if b == '"' {
-			return sb.String(), i + 1, nil
-		}
-
-		sb.WriteByte(b)
-	}
-
-	return "", 0, ErrMissingClosingQuote
 }

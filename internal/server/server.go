@@ -2,7 +2,6 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -14,8 +13,8 @@ import (
 type Handler func(w response.Writer, req *request.Request)
 
 type Server struct {
-	handler Handler
-	closed  bool
+	handler  Handler
+	listener net.Listener
 }
 
 type HandlerError struct {
@@ -27,14 +26,13 @@ func (h *HandlerError) Write(w response.Writer) {
 	_ = w.WriteStatusLine(h.StatusCode)
 
 	headers := response.GetDefaultHeaders(len(h.Message))
-	w.WriteHeaders(headers)
+	_ = w.WriteHeaders(headers)
 
 	_, _ = w.WriteBody([]byte(h.Message))
 }
 
 func (s *Server) Close() error {
-	s.closed = true
-	return nil
+	return s.listener.Close()
 }
 
 func (s *Server) handle(conn io.ReadWriteCloser) {
@@ -52,23 +50,12 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 		return
 	}
 
-	buf := bytes.NewBuffer([]byte{})
 	s.handler(*responseWriter, r)
-
-	b := buf.Bytes()
-	responseWriter.WriteStatusLine(response.StatusOK)
-	headers := response.GetDefaultHeaders(len(b))
-	responseWriter.WriteHeaders(headers)
-	conn.Write(b)
 }
 
-func (s *Server) runServer(listener net.Listener) {
+func (s *Server) runServer() {
 	for {
-		conn, err := listener.Accept()
-		if s.closed {
-			return
-		}
-
+		conn, err := s.listener.Accept()
 		if err != nil {
 			return
 		}
@@ -84,10 +71,10 @@ func Serve(port uint16, handle Handler) (*Server, error) {
 	}
 
 	server := &Server{
-		closed:  false,
-		handler: handle,
+		handler:  handle,
+		listener: listener,
 	}
 
-	go server.runServer(listener)
+	go server.runServer()
 	return server, nil
 }

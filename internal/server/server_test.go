@@ -1,6 +1,5 @@
 // Edge-case tests from EDGE_CASES.md §E6 — Server.
-// Tests marked "⚠ BUG" assert the CORRECT behavior and are expected to fail
-// until the corresponding bug in server.go is fixed.
+// All catalog bugs are fixed; these tests now pin the correct behavior.
 //
 // Not covered on purpose (add after the fixes): a panicking handler currently
 // crashes the whole test binary (no recover in handle), and slow-loris /
@@ -48,9 +47,8 @@ func helloHandler(w response.Writer, req *request.Request) {
 }
 
 func TestHandleWritesExactlyOneResponse(t *testing.T) {
-	// ⚠ BUG: handle() lets the handler write to the connection and then writes
-	// ANOTHER status line + header block after it (the `buf` in handle is never
-	// wired to the writer), so every successful response is malformed.
+	// The handler owns the entire response — handle() must not write a
+	// second status line or header block after it.
 	s := &Server{handler: helloHandler}
 	conn := newFakeConn("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 	s.handle(conn)
@@ -124,8 +122,8 @@ func TestServeRespondsOverTCP(t *testing.T) {
 }
 
 func TestCloseStopsAccepting(t *testing.T) {
-	// ⚠ BUG: Close() only flips a bool and never closes the listener, so the
-	// server keeps accepting connections forever (and the flag itself is racy).
+	// Close() closes the listener, which unblocks Accept and stops the
+	// server accepting new connections.
 	port := freePort(t)
 	srv, err := Serve(port, helloHandler)
 	require.NoError(t, err)

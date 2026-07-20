@@ -1,6 +1,5 @@
 // Edge-case tests from EDGE_CASES.md §E5 — Response writer.
-// Tests marked "⚠ BUG" assert the CORRECT behavior and are expected to fail
-// until the corresponding bug in response.go is fixed.
+// All catalog bugs are fixed; these tests now pin the correct behavior.
 package response
 
 import (
@@ -116,10 +115,8 @@ func TestWriteChunkedBodySmall(t *testing.T) {
 }
 
 func TestWriteChunkedBodyEmptySlice(t *testing.T) {
-	// ⚠ BUG: WriteChunkedBody(nil/empty) currently emits "0\r\n\r\n", which is
-	// the chunked-stream TERMINATOR — it ends the body mid-stream. An empty
-	// chunk must either be a no-op or return an error; it must never write the
-	// terminator.
+	// A zero-length chunk is a no-op: the "0 CRLF CRLF" sequence is the
+	// stream TERMINATOR and only Done/Trailers may emit it.
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
 	_, _ = w.WriteChunkedBody([]byte{})
@@ -127,8 +124,8 @@ func TestWriteChunkedBodyEmptySlice(t *testing.T) {
 }
 
 func TestWriteChunkedBodyDone(t *testing.T) {
-	// ⚠ BUG: currently writes only "0\r\n"; without trailers the stream must
-	// still be terminated by a full "0\r\n\r\n" (RFC 9112 §7.1).
+	// Without trailers the stream ends with the full "0 CRLF CRLF"
+	// terminator (RFC 9112 §7.1).
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
 	_, err := w.WriteChunkedBodyDone()
