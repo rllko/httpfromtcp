@@ -1,3 +1,30 @@
+/*
+*
+* I NEED THIS
+func main() {
+    router = chi.NewRouter()
+    router.Use(middleware.Recoverer)
+    var err error
+    db, err = connect()
+    catch(err)
+    router.Use(ChangeMethod)
+    router.Get("/", GetAllArticles)
+    router.Route("/articles", func(r chi.Router) {
+        r.Get("/", NewArticle)
+        r.Post("/", CreateArticle)
+        r.Route("/{articleID}", func(r chi.Router) {
+            r.Use(ArticleCtx)
+            r.Get("/", GetArticle) // GET /articles/1234
+            r.Put("/", UpdateArticle)    // PUT /articles/1234
+            r.Delete("/", DeleteArticle) // DELETE /articles/1234
+            r.Get("/edit", EditArticle) // GET /articles/1234/edit
+        })
+    })
+    err = http.ListenAndServe(":8005", router)
+    catch(err)
+}
+
+*/
 package router
 
 import (
@@ -42,12 +69,14 @@ type node struct {
 type Router struct {
 	trees    map[string]*node
 	newIndex func() segmentIndex
+	Errors   []error
 }
 
 func New() *Router {
 	return &Router{
 		trees:    map[string]*node{},
 		newIndex: func() segmentIndex { return mapIndex{} },
+		Errors:   []error{},
 	}
 }
 
@@ -55,11 +84,17 @@ func NewHashed() *Router {
 	return &Router{
 		trees:    map[string]*node{},
 		newIndex: func() segmentIndex { return &hashIndex{} },
+		Errors:   []error{},
 	}
 }
 
 func (r *Router) newNode() *node {
 	return &node{static: r.newIndex()}
+}
+
+// Err returns whether errors were encountered
+func (r *Router) Err() error {
+	return errors.Join(r.Errors...)
 }
 
 func splitPath(p string) ([]string, bool) {
@@ -216,4 +251,48 @@ func (r *Router) Allowed(path string) []string {
 	}
 	sort.Strings(methods)
 	return methods
+}
+
+func (r *Router) Get(pattern string, h Handler) *Router {
+	err := r.Register("GET", strings.ToLower(pattern), h)
+	if err != nil {
+		r.Errors = append(r.Errors, err)
+	}
+
+	return r
+}
+
+func (r *Router) Post(pattern string, h Handler) *Router {
+	err := r.Register("POST", strings.ToLower(pattern), h)
+	if err != nil {
+		r.Errors = append(r.Errors, err)
+	}
+
+	return r
+}
+
+func (r *Router) Delete(pattern string, h Handler) *Router {
+	err := r.Register("DELETE", strings.ToLower(pattern), h)
+	if err != nil {
+		r.Errors = append(r.Errors, err)
+	}
+
+	return r
+}
+
+func (r *Router) Put(pattern string, h Handler) *Router {
+	err := r.Register("PUT", strings.ToLower(pattern), h)
+	if err != nil {
+		r.Errors = append(r.Errors, err)
+	}
+
+	return r
+}
+
+func (r *Router) Patch(pattern string, h Handler) *Router {
+	err := r.Register("PATCH", strings.ToLower(pattern), h)
+	if err != nil {
+		r.Errors = append(r.Errors, err)
+	}
+	return r
 }

@@ -30,6 +30,15 @@ func NewWriter(w io.Writer) *Writer {
 	}
 }
 
+func Error(w Writer, msg string, code StatusCode) {
+	_ = w.WriteStatusLine(code)
+
+	headers := GetDefaultHeaders(len(msg))
+	_ = w.WriteHeaders(headers)
+
+	_, _ = w.WriteBody([]byte(msg))
+}
+
 func (w *Writer) WriteStatusLine(status StatusCode) error {
 	statusLine := []byte(httpVersion)
 	switch status {
@@ -54,6 +63,28 @@ func GetDefaultHeaders(contentLen int) *headers.Headers {
 	h.Set("Connection", "close")
 	h.Set("Content-length", fmt.Sprintf("%d", contentLen))
 	return h
+}
+
+func (w *Writer) RespondWithBody(statusCode StatusCode, contentType string, body []byte) error {
+	h := GetDefaultHeaders(len(body))
+	h.Replace("Content-type", contentType)
+
+	err := w.WriteStatusLine(statusCode)
+	if err != nil {
+		return err
+	}
+
+	err = w.WriteHeaders(h)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.WriteBody(body)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (w *Writer) WriteHeaders(headers *headers.Headers) error {
