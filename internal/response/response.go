@@ -18,6 +18,8 @@ var (
 	StatusOK                  StatusCode = 200
 	StatusBadRequest          StatusCode = 400
 	StatusInternalServerError StatusCode = 500
+	StatusNotImplemented      StatusCode = 501
+	StatusLengthRequired      StatusCode = 411
 )
 
 type Writer struct {
@@ -48,6 +50,10 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "400 Bad Request")
 	case StatusInternalServerError:
 		statusLine = fmt.Append(statusLine, "500 Internal Server Error")
+	case StatusNotImplemented:
+		statusLine = fmt.Append(statusLine, "501 Not Implemented")
+	case StatusLengthRequired:
+		statusLine = fmt.Append(statusLine, "411 Length Required")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}

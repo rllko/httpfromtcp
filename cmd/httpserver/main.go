@@ -133,13 +133,17 @@ var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) 
 	)
 }
 
+var uploadFile router.Handler = func(w response.Writer, req *request.Request) {
+}
+
 func main() {
 	r := router.New()
 	r.Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
-		Get("/video", videoEndpoint)
+		Get("/video", videoEndpoint).
+		Post("/upload-file", uploadFile)
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)

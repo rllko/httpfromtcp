@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,17 @@ type Request struct {
 	bodyLength int
 }
 
+type StatusCode int
+
+type ErrRequest struct {
+	Status  StatusCode
+	Message string
+}
+
+func (e *ErrRequest) Error() string {
+	return e.Message
+}
+
 var (
 	ErrorMalforedRequestLine    = errors.New("bad Request Line")
 	ErrorMalforedRequestTarget  = errors.New("bad Request RequestTarget")
@@ -52,7 +64,8 @@ var (
 	// lands, a Transfer-Encoding body must be REFUSED (501), never
 	// silently dropped — dropping it is a smuggling-shaped data loss.
 	ErrorTransferEncodingNotImplemented = errors.New("transfer-encoding not implemented")
-	SEPARATOR                   = []byte("\r\n")
+	ErrorInvalidTransferEncoding        = errors.New("invalid Transfer-Encoding")
+	SEPARATOR                           = []byte("\r\n")
 )
 
 const (
@@ -121,6 +134,7 @@ func (r *Request) validateHost() error {
 
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
+	//decodedBody := make([]byte, 1000000)
 outer:
 	for {
 		currentData := data[read:]
@@ -172,11 +186,42 @@ outer:
 					return 0, err
 				}
 
-				// M5 pending: refuse chunked (and any other coding)
-				// instead of silently ignoring the body.
-				if _, hasTE := r.Headers.Get("transfer-encoding"); hasTE {
+				if data, hasTE := r.Headers.Get("transfer-encoding"); hasTE {
+					// transfer encoding overrides content length - rfc 9112 §6.1
+					// i get that both together should generate a 400 but this does the same ig
+					r.Headers.Delete("Content-length")
+
+					params := strings.Split(data, ",")
+
+					occurChunked := 0
+
+					for i, param := range params {
+						param := strings.TrimSpace(param)
+						params[i] = param
+						if strings.ToLower(param) == "chunked" {
+							occurChunked++
+						}
+					}
+
+					if idx := slices.Index(params, "chunked"); (idx != -1 &&
+						params[len(params)-1] != "chunked") ||
+						occurChunked > 1 {
+						fmt.Println(idx)
+						r.state = StateError
+						return 0, &ErrRequest{
+							Status:  400,
+							Message: ErrorInvalidTransferEncoding.Error(),
+						}
+					}
+
+					if occurChunked == 1 {
+					}
+
 					r.state = StateError
-					return 0, ErrorTransferEncodingNotImplemented
+					return 0, &ErrRequest{
+						Status:  501,
+						Message: ErrorTransferEncodingNotImplemented.Error(),
+					}
 				}
 
 				length, err := r.contentLength()
@@ -192,6 +237,14 @@ outer:
 					r.state = StateBody
 				} else {
 					r.state = StateDone
+				}
+
+				remaining := len(data[read:])
+				if remaining > 0 && r.state == StateDone {
+					r.state = StateError
+					return 0, &ErrRequest{
+						Status: 411,
+					}
 				}
 			}
 		case StateBody:

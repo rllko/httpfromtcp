@@ -60,6 +60,28 @@ func TestRequestLineParse(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestInvalidTransferDuplicatedEncoding(t *testing.T) {
+	reader := &chunkReader{
+		data:            "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, chunked\r\n\r\n",
+		numBytesPerRead: 3,
+	}
+
+	r, err := RequestFromReader(reader)
+	require.Error(t, err)
+	require.Nil(t, r)
+}
+
+func TestInvalidOrderTransferEncoding(t *testing.T) {
+	reader := &chunkReader{
+		data:            "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, gzip\r\n\r\n",
+		numBytesPerRead: 3,
+	}
+
+	r, err := RequestFromReader(reader)
+	require.Error(t, err)
+	require.Nil(t, r)
+}
+
 func TestParseFunction(t *testing.T) {
 	// Test: Standard Headers
 	reader := &chunkReader{
