@@ -31,6 +31,7 @@ type Request struct {
 	Headers     *headers.Headers
 	Body        string
 	URL         *url.URL
+	Trailers    headers.Headers
 
 	// bodyLength is the validated Content-Length, computed once when the
 	// headers complete. Only meaningful in StateBody.
@@ -83,10 +84,11 @@ const (
 
 func NewRequest() *Request {
 	return &Request{
-		state:   StateInit,
-		Headers: headers.NewHeaders(),
-		Body:    "",
-		URL:     &url.URL{},
+		state:    StateInit,
+		Headers:  headers.NewHeaders(),
+		Body:     "",
+		URL:      &url.URL{},
+		Trailers: *headers.NewHeaders(),
 	}
 }
 
@@ -196,6 +198,16 @@ outer:
 					// i get that both together should generate a 400 but this does the same ig
 					r.Headers.Delete("Content-length")
 
+					str, exists := r.Headers.Get("Trailer")
+					if exists {
+						for t := range strings.SplitSeq(str, ",") {
+							r.Trailers.Set(t, "")
+							fmt.Println(t)
+							// TODO: check if after consuming the trailers the bug still happens
+							read += (len(t) + 1)
+						}
+					}
+
 					params := strings.Split(data, ",")
 
 					occurChunked := 0
@@ -258,24 +270,10 @@ outer:
 				r.state = StateDone
 			}
 		case StateChunkSize:
-			idx := bytes.Index(currentData, []byte("\r\n"))
-			if idx == -1 {
-				// incomplete line, wait for more
-				break outer
-			}
-
-			rawSize := string(currentData[:idx])
-			if before, _, ok := bytes.Cut([]byte(rawSize), []byte(";")); ok {
-				rawSize = string(before)
-			}
-
-			size, err := strconv.ParseUint(rawSize, 16, 64)
+			size, idx, err := beginChunk(currentData)
 			if err != nil {
 				r.state = StateError
-				return 0, &ErrRequest{
-					Status:  400,
-					Message: "invalid chunk size format",
-				}
+				return 0, err
 			}
 
 			read += idx + 2
@@ -304,6 +302,7 @@ outer:
 			if len(currentData) < 2 {
 				break outer
 			}
+			fmt.Printf("%q\n%q %q", []rune(string(currentData)), currentData[0], currentData[1])
 			// i couldn do bytes.Index here but checking is cheaper
 			if currentData[0] != '\r' && currentData[1] != '\n' {
 				r.state = StateError
@@ -322,7 +321,6 @@ outer:
 			}
 
 		case StateDone:
-			fmt.Println(r.Body)
 			break outer
 
 		default:
