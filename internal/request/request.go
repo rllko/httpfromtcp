@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,18 +25,32 @@ type RequestLine struct {
 	Method        string
 }
 
-type parserState string
-
 type Request struct {
-	RequestLine RequestLine
-	state       parserState
-	Headers     *headers.Headers
-	Body        string
-	URL         *url.URL
-
+	RequestLine    RequestLine
+	state          parserState
+	Headers        *headers.Headers
+	Body           string
+	URL            *url.URL
+	Trailers       headers.Headers
+	trailersLength int
 	// bodyLength is the validated Content-Length, computed once when the
 	// headers complete. Only meaningful in StateBody.
 	bodyLength int
+
+	// chunked encoding state tracking
+	currentChunkSize int
+	chunkBytesRead   int
+}
+
+type StatusCode int
+
+type ErrRequest struct {
+	Status  StatusCode
+	Message string
+}
+
+func (e *ErrRequest) Error() string {
+	return e.Message
 }
 
 var (
@@ -52,23 +67,33 @@ var (
 	// lands, a Transfer-Encoding body must be REFUSED (501), never
 	// silently dropped — dropping it is a smuggling-shaped data loss.
 	ErrorTransferEncodingNotImplemented = errors.New("transfer-encoding not implemented")
-	SEPARATOR                   = []byte("\r\n")
+	ErrorInvalidTransferEncoding        = errors.New("invalid Transfer-Encoding")
+	SEPARATOR                           = []byte("\r\n")
+)
+
+type parserState string
+
+const (
+	maxChunkLine = 8 << 10  // 8192
+	maxBodySize  = 10 << 20 // 10485760
 )
 
 const (
-	StateInit    parserState = "init"
-	StateDone    parserState = "done"
-	StateError   parserState = "error"
-	StateHeaders             = "headers"
-	StateBody                = "body"
+	StateInit                parserState = "init"
+	StateDone                parserState = "done"
+	StateError               parserState = "error"
+	StateHeaders             parserState = "headers"
+	StateBody                parserState = "body"
+	StateConsumeChunkTrailer parserState = "chunkedTrailer"
 )
 
 func NewRequest() *Request {
 	return &Request{
-		state:   StateInit,
-		Headers: headers.NewHeaders(),
-		Body:    "",
-		URL:     &url.URL{},
+		state:    StateInit,
+		Headers:  headers.NewHeaders(),
+		Body:     "",
+		URL:      &url.URL{},
+		Trailers: *headers.NewHeaders(),
 	}
 }
 
@@ -121,6 +146,7 @@ func (r *Request) validateHost() error {
 
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
+	//decodedBody := make([]byte, 1000000)
 outer:
 	for {
 		currentData := data[read:]
@@ -172,17 +198,61 @@ outer:
 					return 0, err
 				}
 
-				// M5 pending: refuse chunked (and any other coding)
-				// instead of silently ignoring the body.
-				if _, hasTE := r.Headers.Get("transfer-encoding"); hasTE {
+				if data, hasTE := r.Headers.Get("transfer-encoding"); hasTE {
+					// transfer encoding overrides content length - rfc 9112 §6.1
+					// i get that both together should generate a 400 but this does the same ig
+					r.Headers.Delete("Content-length")
+
+					str, exists := r.Headers.Get("Trailer")
+					if exists {
+						for idx, t := range strings.Split(str, ",") {
+							if idx > 50 {
+								break
+							}
+
+							r.Trailers.Set(t, "")
+						}
+					}
+
+					params := strings.Split(data, ",")
+
+					occurChunked := 0
+
+					for i, param := range params {
+						param := strings.TrimSpace(param)
+						params[i] = param
+						if strings.ToLower(param) == "chunked" {
+							occurChunked++
+						}
+					}
+
+					if idx := slices.Index(params, "chunked"); (idx != -1 &&
+						params[len(params)-1] != "chunked") ||
+						occurChunked > 1 {
+						r.state = StateError
+						return 0, &ErrRequest{
+							Status:  400,
+							Message: ErrorInvalidTransferEncoding.Error(),
+						}
+					}
+
+					if occurChunked == 1 {
+						r.state = StateChunkSize
+						// i was going to return here, but i can just transition
+						break
+					}
+
 					r.state = StateError
-					return 0, ErrorTransferEncodingNotImplemented
+					return 0, &ErrRequest{
+						Status:  501,
+						Message: ErrorTransferEncodingNotImplemented.Error(),
+					}
 				}
 
 				length, err := r.contentLength()
 				if err != nil {
 					r.state = StateError
-					return 0, err
+					break
 				}
 				r.bodyLength = length
 
@@ -193,6 +263,7 @@ outer:
 				} else {
 					r.state = StateDone
 				}
+
 			}
 		case StateBody:
 			// bodyLength was validated at the headers boundary and is > 0
@@ -204,11 +275,99 @@ outer:
 			if len(r.Body) == r.bodyLength {
 				r.state = StateDone
 			}
+		case StateChunkSize:
+
+			size, idx, err := beginChunk(currentData)
+			if err != nil {
+				r.state = StateError
+				return 0, err
+			}
+
+			read += idx + 2
+			r.currentChunkSize = int(size)
+			r.chunkBytesRead = 0
+
+			if r.currentChunkSize == 0 {
+				r.state = StateConsumeTrailers
+			} else {
+				r.state = StateChunkData
+			}
+		case StateChunkData:
+			needed := r.currentChunkSize - r.chunkBytesRead
+			available := len(currentData)
+			toRead := min(needed, available)
+
+			if len(r.Body)+toRead > maxBodySize {
+				return 0, &ErrRequest{
+					Status:  413,
+					Message: "Body too Large",
+				}
+			}
+
+			r.Body += string(currentData[:toRead])
+			read += toRead
+			r.chunkBytesRead += toRead
+
+			if r.chunkBytesRead == r.currentChunkSize {
+				r.state = StateChunkCRLF
+			}
+
+		case StateChunkCRLF:
+			if len(currentData) < 2 {
+				break outer
+			}
+
+			// i couldn do bytes.Index here but checking is cheaper
+			if currentData[0] != '\r' || currentData[1] != '\n' {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  400,
+					Message: "missing CRLF after chunk data",
+				}
+			}
+
+			read += 2
+			if r.currentChunkSize == 0 {
+				r.state = StateDone
+			} else {
+				r.state = StateChunkSize
+			}
+		case StateConsumeTrailers:
+			idx := bytes.Index(currentData, []byte("\r\n"))
+			if idx == 0 {
+				read += 2
+				r.state = StateDone
+				break
+			}
+
+			before, after, ok := bytes.Cut(currentData, []byte(":"))
+			if !ok {
+				return 0, &ErrRequest{
+					Status:  400,
+					Message: "invalid Trailers",
+				}
+			}
+
+			// checking never hurts, this would be a bug otherwise
+			if _, exist := r.Trailers.Get(string(before)); exist {
+				r.Trailers.Replace(string(before), string(after))
+			}
+
+			if r.trailersLength+idx > maxChunkLine {
+				return 0, &ErrRequest{
+					Status: 413,
+				}
+			}
+
+			r.trailersLength += idx + 2
+			read += idx + 2
+
+			r.state = StateChunkCRLF
 		case StateDone:
 			break outer
 
 		default:
-			panic("somehow i'm here")
+			panic("somehow im here")
 		}
 	}
 	return read, nil

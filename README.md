@@ -1,9 +1,10 @@
 # httpfromtcp
+
 [![Go](https://github.com/rllko/httpfromtcp/actions/workflows/go.yml/badge.svg)](https://github.com/rllko/httpfromtcp/actions/workflows/go.yml)
 
 An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go standard library. It has no external dependencies.
 
-> **Note:** This document shows the completed project. Two parts are not complete at this time: the decoder for chunked request bodies, and the option functions that connect the router to the server. See [Project status](#project-status) for the status of each part.
+> **Note:** This document shows the completed project. One part is not complete at this time: the option functions that connect the router to the server. See [Project status](#project-status) for the status of each part.
 
 > **Note:** This is a project for study. Do not use this server in production.
 
@@ -19,10 +20,12 @@ Done:
 - [x] Polynomial rolling-hash index with a benchmark against a Go map
 - [x] Chunked response writer
 - [x] Test suite: split-read, malformed-input, end-to-end, differential, and collision tests
+- [x] Chunked request-body decoder with trailer fields.
 
 Not done yet:
 
-- [ ] **Chunked request-body decoder.** The server refuses a request with `Transfer-Encoding` with a `501` response. The decoder must resume across split reads (mid-size-line, mid-data, mid-CRLF).
+- [ ] **Router wiring with interfaces and functional options.**
+- [ ] **Size limits for chunked requests.** The decoder does not limit the body size, the size line, or the trailer section yet.
 - [ ] **Router wiring with interfaces and functional options.**
 
 ## What the project does
@@ -62,12 +65,21 @@ Each state consumes the bytes it can and reports how many. The caller keeps the 
 ```mermaid
 stateDiagram-v2
     [*] --> Init
-    Init --> Headers: request line complete\n(method, target, version)
-    Headers --> Body: headers complete\nand Content-Length > 0
-    Headers --> Done: headers complete\nand no body
+    Init --> Headers: request line complete
+    Headers --> Body: Content-Length > 0
+    Headers --> ChunkSize: Transfer-Encoding is chunked
+    Headers --> Done: no body
     Body --> Done: all body bytes read
-    Init --> Error: malformed line\nor bad method
-    Headers --> Error: bad header,\nbad Host, or bad Content-Length
+    ChunkSize --> ChunkData: chunk size > 0
+    ChunkSize --> Trailers: chunk size is 0
+    ChunkData --> ChunkCRLF: all chunk bytes read
+    ChunkCRLF --> ChunkSize: more chunks follow
+    Trailers --> Trailers: one trailer field
+    Trailers --> Done: empty line
+    Init --> Error: bad request line
+    Headers --> Error: bad header or bad Host
+    ChunkSize --> Error: bad chunk size
+    ChunkCRLF --> Error: no CRLF after the data
     Error --> [*]
     Done --> [*]
 ```
@@ -121,23 +133,23 @@ curl http://localhost:42069/
 package main
 
 import (
-	"httpfromtcp/internal/request"
-	"httpfromtcp/internal/response"
-	"httpfromtcp/internal/server"
+ "httpfromtcp/internal/request"
+ "httpfromtcp/internal/response"
+ "httpfromtcp/internal/server"
 )
 
 func main() {
-	srv, err := server.Serve(8080, func(w response.Writer, req *request.Request) {
-		w.WriteStatusLine(response.StatusOK)
-		h := response.GetDefaultHeaders(5)
-		w.WriteHeaders(h)
-		w.WriteBody([]byte("hello"))
-	})
-	if err != nil {
-		panic(err)
-	}
-	defer srv.Close()
-	select {}
+ srv, err := server.Serve(8080, func(w response.Writer, req *request.Request) {
+  w.WriteStatusLine(response.StatusOK)
+  h := response.GetDefaultHeaders(5)
+  w.WriteHeaders(h)
+  w.WriteBody([]byte("hello"))
+ })
+ if err != nil {
+  panic(err)
+ }
+ defer srv.Close()
+ select {}
 }
 ```
 
@@ -153,8 +165,8 @@ r.Register("GET", "/users/:id", getUser)
 r.Register("GET", "/files/*path", getFile)
 
 srv, err := server.Serve(8080,
-	server.WithRouter(r),
-	server.WithErrorResponder(myErrorResponder),
+ server.WithRouter(r),
+ server.WithErrorResponder(myErrorResponder),
 )
 ```
 
@@ -164,11 +176,11 @@ The router maps a route to a `router.Handler`, a function with the same shape as
 
 You register a route with a method and a path pattern. A path pattern has three types of segments:
 
-| Segment type | Example    | What it matches                          |
-| ------------ | ---------- | ---------------------------------------- |
-| Static       | `/users`   | Only the exact text `users`              |
-| Param        | `/:id`     | One segment with any value               |
-| Wildcard     | `/*path`   | All the segments that remain in the path |
+| Segment type | Example  | What it matches                          |
+| ------------ | -------- | ---------------------------------------- |
+| Static       | `/users` | Only the exact text `users`              |
+| Param        | `/:id`   | One segment with any value               |
+| Wildcard     | `/*path` | All the segments that remain in the path |
 
 The router obeys these rules:
 
@@ -213,13 +225,17 @@ The parser rejects these inputs and the server sends a `400` response:
 
 The read buffer grows when a request is larger than its initial size. A large request does not stop the parser.
 
-The server sends a `501` response for each request with a `Transfer-Encoding` header, until the chunked decoder is complete. The server refuses the body; it does not discard the body without a signal.
+The server sends a `501` response for a `Transfer-Encoding` value that it does not know. The server accepts `chunked`. The server sends a `400` response if `chunked` is not the last coding, or if `chunked` occurs two times.
 
 ## Chunked transfer encoding
 
-> **Note:** The decoder for chunked request bodies is not complete. The server refuses such requests with a `501` response. The response writer below is complete.
+The server reads and writes chunked bodies.
 
-Each chunk has a hexadecimal size line, the data, and a CRLF. A chunk of size zero ends the body.
+Each chunk has a hexadecimal size line, the data, and a CRLF. A chunk of size zero ends the body. Trailer fields can follow the last chunk. An empty line ends the trailer section.
+
+The decoder is a state machine with four states: chunk size, chunk data, chunk CRLF, and trailers. The decoder continues across split reads. A read can stop at any byte, also in the middle of a size line or in the middle of the data.
+
+The decoder removes chunk extensions from the size line. The decoder puts the decoded bytes in `Request.Body`. The decoder puts the trailer fields in `Request.Trailers`.
 
 The response writer can write a chunked body. A chunked stream has two legal endings. Use one of them, not both:
 
@@ -229,19 +245,25 @@ w.WriteChunkedBodyDone()     // ending 1: no trailers ("0" chunk + empty line)
 w.WriteTrailers(trailers)    // ending 2: "0" chunk + trailer fields + empty line
 ```
 
+Test the decoder with raw bytes:
+
+```sh
+printf 'POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ncat\r\n5\r\nhello\r\n0\r\n\r\n' | nc localhost 42069
+```
+
 ## Packages
 
-| Package             | What it contains                                          |
-| ------------------- | --------------------------------------------------------- |
-| `internal/request`  | The request parser and its state machine                  |
-| `internal/headers`  | The header map, quoted-strings, and header parameters     |
-| `internal/url`      | Percent-decoding, the path/query split, host validation   |
-| `internal/response` | The response writer                                       |
-| `internal/router`   | The trie router and the rolling hash                      |
-| `internal/server`   | The TCP listener, the options, and the interfaces         |
-| `cmd/httpserver`    | An example server                                         |
-| `cmd/tcplistener`   | A tool that prints the requests that it receives          |
-| `cmd/udpsender`     | A tool that sends UDP packets                             |
+| Package             | What it contains                                        |
+| ------------------- | ------------------------------------------------------- |
+| `internal/request`  | The request parser and its state machine                |
+| `internal/headers`  | The header map, quoted-strings, and header parameters   |
+| `internal/url`      | Percent-decoding, the path/query split, host validation |
+| `internal/response` | The response writer                                     |
+| `internal/router`   | The trie router and the rolling hash                    |
+| `internal/server`   | The TCP listener, the options, and the interfaces       |
+| `cmd/httpserver`    | An example server                                       |
+| `cmd/tcplistener`   | A tool that prints the requests that it receives        |
+| `cmd/udpsender`     | A tool that sends UDP packets                           |
 
 ## The interfaces
 

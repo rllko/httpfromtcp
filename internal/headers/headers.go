@@ -67,7 +67,12 @@ func (h *Headers) Delete(name string) {
 
 func (h *Headers) Replace(name, value string) {
 	name = strings.ToLower(name)
+
 	h.headers[name] = value
+}
+
+func (h *Headers) Count() int {
+	return len(h.headers)
 }
 
 func (h *Headers) Set(name, value string) {

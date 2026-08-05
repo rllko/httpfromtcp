@@ -2,8 +2,10 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 
 	"httpfromtcp/internal/request"
@@ -23,12 +25,24 @@ type HandlerError struct {
 }
 
 func (h *HandlerError) Write(w response.Writer) {
-	_ = w.WriteStatusLine(h.StatusCode)
+	err := w.WriteStatusLine(h.StatusCode)
+	if err != nil {
+		log.Fatalf("error writing status line: %v", err)
+		return
+	}
 
 	headers := response.GetDefaultHeaders(len(h.Message))
-	_ = w.WriteHeaders(headers)
+	err = w.WriteHeaders(headers)
+	if err != nil {
+		log.Fatalf("error writing headers: %v", err)
+		return
+	}
 
-	_, _ = w.WriteBody([]byte(h.Message))
+	n, err := w.WriteBody([]byte(h.Message))
+	if err != nil || n != len(h.Message) {
+		log.Fatalf("error writing body: %v", err)
+		return
+	}
 }
 
 func (s *Server) Close() error {
@@ -45,6 +59,12 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 			StatusCode: response.StatusBadRequest,
 			Message:    err.Error(),
 		}
+
+		if err, ok := errors.AsType[*request.ErrRequest](err); ok {
+			hErr.StatusCode = response.StatusCode(err.Status)
+			hErr.Message = err.Error()
+		}
+
 		hErr.Write(*responseWriter)
 
 		return
