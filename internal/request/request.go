@@ -335,6 +335,8 @@ outer:
 		case StateConsumeTrailers:
 			idx := bytes.Index(currentData, []byte("\r\n"))
 			if idx == 0 {
+				read += 2
+				r.state = StateDone
 				break
 			}
 

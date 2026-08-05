@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-const maxLineLength = 4096
+const maxLineLength = 8 * 1024 * 1024
 
 var (
 	StateChunkSize       parserState = "StateChunkSize"
