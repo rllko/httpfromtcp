@@ -3,13 +3,10 @@ package request
 
 import (
 	"bytes"
-	"errors"
 	"strconv"
 )
 
 const maxLineLength = 4096
-
-var ErrLineTooLong = errors.New("line too long")
 
 var (
 	StateChunkSize       parserState = "StateChunkSize"
@@ -24,10 +21,17 @@ func beginChunk(currentData []byte) (int, int, error) {
 		// incomplete line, wait for more
 		return 0, 0, nil
 	}
-
 	rawSize := string(removeChunkExtension(currentData[:idx]))
 
 	size, err := strconv.ParseUint(rawSize, 16, 64)
+
+	if size > maxLineLength {
+		return 0, 0, &ErrRequest{
+			Status:  413,
+			Message: "line too long",
+		}
+	}
+
 	if err != nil {
 		return 0, 0, &ErrRequest{
 			Status:  400,

@@ -26,13 +26,13 @@ type RequestLine struct {
 }
 
 type Request struct {
-	RequestLine RequestLine
-	state       parserState
-	Headers     *headers.Headers
-	Body        string
-	URL         *url.URL
-	Trailers    headers.Headers
-
+	RequestLine    RequestLine
+	state          parserState
+	Headers        *headers.Headers
+	Body           string
+	URL            *url.URL
+	Trailers       headers.Headers
+	trailersLength int
 	// bodyLength is the validated Content-Length, computed once when the
 	// headers complete. Only meaningful in StateBody.
 	bodyLength int
@@ -72,6 +72,11 @@ var (
 )
 
 type parserState string
+
+const (
+	maxChunkLine = 8 << 10  // 8192
+	maxBodySize  = 10 << 20 // 10485760
+)
 
 const (
 	StateInit                parserState = "init"
@@ -200,9 +205,12 @@ outer:
 
 					str, exists := r.Headers.Get("Trailer")
 					if exists {
-						for t := range strings.SplitSeq(str, ",") {
+						for idx, t := range strings.Split(str, ",") {
+							if idx > 50 {
+								break
+							}
+
 							r.Trailers.Set(t, "")
-							// TODO: check if after consuming the trailers the bug still happens
 						}
 					}
 
@@ -289,6 +297,13 @@ outer:
 			available := len(currentData)
 			toRead := min(needed, available)
 
+			if len(r.Body)+toRead > maxBodySize {
+				return 0, &ErrRequest{
+					Status:  413,
+					Message: "Body too Large",
+				}
+			}
+
 			r.Body += string(currentData[:toRead])
 			read += toRead
 			r.chunkBytesRead += toRead
@@ -325,13 +340,26 @@ outer:
 
 			before, after, ok := bytes.Cut(currentData, []byte(":"))
 			if !ok {
-				fmt.Printf("not okay ig")
-				break outer
+				return 0, &ErrRequest{
+					Status:  400,
+					Message: "invalid Trailers",
+				}
 			}
 
-			r.Trailers.Replace(string(before), string(after))
+			// checking never hurts, this would be a bug otherwise
+			if _, exist := r.Trailers.Get(string(before)); exist {
+				r.Trailers.Replace(string(before), string(after))
+			}
 
+			if r.trailersLength+idx > maxChunkLine {
+				return 0, &ErrRequest{
+					Status: 413,
+				}
+			}
+
+			r.trailersLength += idx + 2
 			read += idx + 2
+
 			r.state = StateChunkCRLF
 		case StateDone:
 			break outer
