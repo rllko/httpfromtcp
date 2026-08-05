@@ -12,9 +12,10 @@ const maxLineLength = 4096
 var ErrLineTooLong = errors.New("line too long")
 
 var (
-	StateChunkSize parserState = "StateChunkSize"
-	StateChunkData parserState = "StateChunkData"
-	StateChunkCRLF parserState = "StateChunkCRLF"
+	StateChunkSize       parserState = "StateChunkSize"
+	StateChunkData       parserState = "StateChunkData"
+	StateChunkCRLF       parserState = "StateChunkCRLF"
+	StateConsumeTrailers parserState = "StateConsumeTrailers"
 )
 
 func beginChunk(currentData []byte) (int, int, error) {

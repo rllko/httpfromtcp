@@ -134,9 +134,10 @@ var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) 
 }
 
 var uploadFile router.Handler = func(w response.Writer, req *request.Request) {
-	fmt.Println(req.Body)
-	w.RespondWithBody(response.StatusOK, "text/html", []byte(req.Body))
-	os.WriteFile("test.txt", []byte(req.Body), 0o664)
+	fmt.Printf("OUTPUT: %s\n", req.Body)
+	req.Trailers.ForEach(func(n string, v string) {
+		fmt.Printf("%s: %s\n", n, v)
+	})
 }
 
 func main() {

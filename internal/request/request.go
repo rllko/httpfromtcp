@@ -202,9 +202,7 @@ outer:
 					if exists {
 						for t := range strings.SplitSeq(str, ",") {
 							r.Trailers.Set(t, "")
-							fmt.Println(t)
 							// TODO: check if after consuming the trailers the bug still happens
-							read += (len(t) + 1)
 						}
 					}
 
@@ -270,6 +268,7 @@ outer:
 				r.state = StateDone
 			}
 		case StateChunkSize:
+
 			size, idx, err := beginChunk(currentData)
 			if err != nil {
 				r.state = StateError
@@ -281,7 +280,7 @@ outer:
 			r.chunkBytesRead = 0
 
 			if r.currentChunkSize == 0 {
-				r.state = StateChunkCRLF
+				r.state = StateConsumeTrailers
 			} else {
 				r.state = StateChunkData
 			}
@@ -302,9 +301,9 @@ outer:
 			if len(currentData) < 2 {
 				break outer
 			}
-			fmt.Printf("%q\n%q %q", []rune(string(currentData)), currentData[0], currentData[1])
+
 			// i couldn do bytes.Index here but checking is cheaper
-			if currentData[0] != '\r' && currentData[1] != '\n' {
+			if currentData[0] != '\r' || currentData[1] != '\n' {
 				r.state = StateError
 				return 0, &ErrRequest{
 					Status:  400,
@@ -313,13 +312,27 @@ outer:
 			}
 
 			read += 2
-
 			if r.currentChunkSize == 0 {
 				r.state = StateDone
 			} else {
 				r.state = StateChunkSize
 			}
+		case StateConsumeTrailers:
+			idx := bytes.Index(currentData, []byte("\r\n"))
+			if idx == 0 {
+				break
+			}
 
+			before, after, ok := bytes.Cut(currentData, []byte(":"))
+			if !ok {
+				fmt.Printf("not okay ig")
+				break outer
+			}
+
+			r.Trailers.Replace(string(before), string(after))
+
+			read += idx + 2
+			r.state = StateChunkCRLF
 		case StateDone:
 			break outer
 
