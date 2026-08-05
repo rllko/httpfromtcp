@@ -25,8 +25,6 @@ type RequestLine struct {
 	Method        string
 }
 
-type parserState string
-
 type Request struct {
 	RequestLine RequestLine
 	state       parserState
@@ -37,6 +35,10 @@ type Request struct {
 	// bodyLength is the validated Content-Length, computed once when the
 	// headers complete. Only meaningful in StateBody.
 	bodyLength int
+
+	// chunked encoding state tracking
+	currentChunkSize int
+	chunkBytesRead   int
 }
 
 type StatusCode int
@@ -68,12 +70,15 @@ var (
 	SEPARATOR                           = []byte("\r\n")
 )
 
+type parserState string
+
 const (
-	StateInit    parserState = "init"
-	StateDone    parserState = "done"
-	StateError   parserState = "error"
-	StateHeaders             = "headers"
-	StateBody                = "body"
+	StateInit                parserState = "init"
+	StateDone                parserState = "done"
+	StateError               parserState = "error"
+	StateHeaders             parserState = "headers"
+	StateBody                parserState = "body"
+	StateConsumeChunkTrailer parserState = "chunkedTrailer"
 )
 
 func NewRequest() *Request {
@@ -206,7 +211,6 @@ outer:
 					if idx := slices.Index(params, "chunked"); (idx != -1 &&
 						params[len(params)-1] != "chunked") ||
 						occurChunked > 1 {
-						fmt.Println(idx)
 						r.state = StateError
 						return 0, &ErrRequest{
 							Status:  400,
@@ -215,6 +219,9 @@ outer:
 					}
 
 					if occurChunked == 1 {
+						r.state = StateChunkSize
+						// i was going to return here, but i can just transition
+						break
 					}
 
 					r.state = StateError
@@ -227,7 +234,7 @@ outer:
 				length, err := r.contentLength()
 				if err != nil {
 					r.state = StateError
-					return 0, err
+					break
 				}
 				r.bodyLength = length
 
@@ -239,13 +246,6 @@ outer:
 					r.state = StateDone
 				}
 
-				remaining := len(data[read:])
-				if remaining > 0 && r.state == StateDone {
-					r.state = StateError
-					return 0, &ErrRequest{
-						Status: 411,
-					}
-				}
 			}
 		case StateBody:
 			// bodyLength was validated at the headers boundary and is > 0
@@ -257,11 +257,76 @@ outer:
 			if len(r.Body) == r.bodyLength {
 				r.state = StateDone
 			}
+		case StateChunkSize:
+			idx := bytes.Index(currentData, []byte("\r\n"))
+			if idx == -1 {
+				// incomplete line, wait for more
+				break outer
+			}
+
+			rawSize := string(currentData[:idx])
+			if before, _, ok := bytes.Cut([]byte(rawSize), []byte(";")); ok {
+				rawSize = string(before)
+			}
+
+			size, err := strconv.ParseUint(rawSize, 16, 64)
+			if err != nil {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  400,
+					Message: "invalid chunk size format",
+				}
+			}
+
+			read += idx + 2
+			r.currentChunkSize = int(size)
+			r.chunkBytesRead = 0
+
+			if r.currentChunkSize == 0 {
+				r.state = StateChunkCRLF
+			} else {
+				r.state = StateChunkData
+			}
+		case StateChunkData:
+			needed := r.currentChunkSize - r.chunkBytesRead
+			available := len(currentData)
+			toRead := min(needed, available)
+
+			r.Body += string(currentData[:toRead])
+			read += toRead
+			r.chunkBytesRead += toRead
+
+			if r.chunkBytesRead == r.currentChunkSize {
+				r.state = StateChunkCRLF
+			}
+
+		case StateChunkCRLF:
+			if len(currentData) < 2 {
+				break outer
+			}
+			// i couldn do bytes.Index here but checking is cheaper
+			if currentData[0] != '\r' && currentData[1] != '\n' {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  400,
+					Message: "missing CRLF after chunk data",
+				}
+			}
+
+			read += 2
+
+			if r.currentChunkSize == 0 {
+				r.state = StateDone
+			} else {
+				r.state = StateChunkSize
+			}
+
 		case StateDone:
+			fmt.Println(r.Body)
 			break outer
 
 		default:
-			panic("somehow i'm here")
+			panic("somehow im here")
 		}
 	}
 	return read, nil
