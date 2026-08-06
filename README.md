@@ -4,9 +4,29 @@
 
 An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go standard library. It has no external dependencies.
 
-> **Note:** This document shows the completed project. One part is not complete at this time: the option functions that connect the router to the server. See [Project status](#project-status) for the status of each part.
-
 > **Note:** This is a project for study. Do not use this server in production.
+
+## Contents
+
+- [Project status](#project-status)
+- [What the project does](#what-the-project-does)
+- [Features](#features)
+- [Getting started](#getting-started)
+  - [Requirements](#requirements)
+  - [Build the project](#build-the-project)
+  - [Start the server](#start-the-server)
+- [Usage](#usage)
+  - [A minimal server](#a-minimal-server)
+- [Architecture](#architecture)
+  - [The flow of a request](#the-flow-of-a-request)
+  - [The parser state machine](#the-parser-state-machine)
+  - [The parser](#the-parser)
+  - [The router](#the-router)
+  - [Chunked transfer encoding](#chunked-transfer-encoding)
+  - [Packages](#packages)
+- [Run the tests](#run-the-tests)
+- [AI usage](#ai-usage)
+- [References](#references)
 
 ## Project status
 
@@ -16,15 +36,14 @@ Done:
 - [x] Percent-decoding of the request target, quoted-strings, and header parameters
 - [x] Host validation for IPv4, IPv6, and registered names
 - [x] Strict `Content-Length` parsing
+- [x] Chunked request-body decoder with trailer fields
+- [x] Chunked response writer
 - [x] Trie router with static, `:param`, and `*wildcard` segments
 - [x] Polynomial rolling-hash index with a benchmark against a Go map
-- [x] Chunked response writer
 - [x] Test suite: split-read, malformed-input, end-to-end, differential, and collision tests
-- [x] Chunked request-body decoder with trailer fields.
 
 Not done yet:
 
-- [ ] **Router wiring with interfaces and functional options.**
 - [ ] **Size limits for chunked requests.** The decoder does not limit the body size, the size line, or the trailer section yet.
 - [ ] **Router wiring with interfaces and functional options.**
 
@@ -33,6 +52,79 @@ Not done yet:
 The server reads bytes from a TCP connection. The parser changes these bytes into an HTTP request. The router finds the correct handler for the request. The handler writes an HTTP response back to the connection.
 
 The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A request can come in many small reads. The parser keeps its state between reads and continues where it stopped.
+
+## Features
+
+- HTTP/1.1 request parser with a resumable state machine
+- Percent-decoding of the request target (RFC 3986 §2.1)
+- Quoted-string parsing in header values (RFC 9110 §5.6.4)
+- Header parameters, for example `text/html; charset=utf-8` (RFC 9110 §5.6.6)
+- Host validation for IPv4, IPv6, and registered names (RFC 9110 §7.2)
+- Chunked transfer encoding for request and response bodies (RFC 9112 §7.1)
+- A trie router with static segments, `:param` segments, and `*wildcard` segments
+- A polynomial rolling hash for segment comparison, with a benchmark against a map
+- Small interfaces, dependency injection, and functional options
+- A large test suite with split-read tests and malformed-input tests
+
+## Getting started
+
+### Requirements
+
+- Go 1.26 or later
+
+### Build the project
+
+1. Get the source code.
+2. Go to the project directory.
+3. Run this command:
+
+```sh
+go build ./...
+```
+
+### Start the server
+
+Run this command:
+
+```sh
+go run ./cmd/httpserver
+```
+
+The server starts on port 42069. Send a request to make sure that the server operates correctly:
+
+```sh
+curl http://localhost:42069/
+```
+
+## Usage
+
+### A minimal server
+
+```go
+package main
+
+import (
+	"httpfromtcp/internal/request"
+	"httpfromtcp/internal/response"
+	"httpfromtcp/internal/server"
+)
+
+func main() {
+	srv, err := server.Serve(8080, func(w response.Writer, req *request.Request) {
+		w.WriteStatusLine(response.StatusOK)
+		h := response.GetDefaultHeaders(5)
+		w.WriteHeaders(h)
+		w.WriteBody([]byte("hello"))
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer srv.Close()
+	select {}
+}
+```
+
+## Architecture
 
 ### The flow of a request
 
@@ -51,7 +143,8 @@ flowchart TD
     F -->|match| G[Handler]
     F -->|no path| H[404 Not Found]
     F -->|wrong method| I[405 with Allow header]
-    G --> J[response.Writer:\nstatus line, headers, body]
+    G --> J[response.Writer:
+    status line, headers, body]
     E --> J
     H --> J
     I --> J
@@ -84,93 +177,29 @@ stateDiagram-v2
     Done --> [*]
 ```
 
-## Features
+### The parser
 
-- HTTP/1.1 request parser with a resumable state machine
-- Percent-decoding of the request target (RFC 3986 §2.1)
-- Quoted-string parsing in header values (RFC 9110 §5.6.4)
-- Header parameters, for example `text/html; charset=utf-8` (RFC 9110 §5.6.6)
-- Host validation for IPv4, IPv6, and registered names (RFC 9110 §7.2)
-- Chunked transfer encoding for response bodies (RFC 9112 §7.1); the request decoder is not complete
-- A trie router with static segments, `:param` segments, and `*wildcard` segments
-- A polynomial rolling hash for segment comparison, with a benchmark against a map
-- Small interfaces, dependency injection, and functional options
-- A large test suite with split-read tests and malformed-input tests
+The parser is a state machine with these states: request line, headers, body, done, error.
 
-## Requirements
+The parser accepts partial data. Each call to `parse` consumes the bytes that make complete parts. The parser returns the count of bytes that it consumed. The caller sends the bytes that remain in the next call.
 
-- Go 1.26 or later
+The parser rejects these inputs and the server sends a `400` response:
 
-## Build the project
+- A malformed request line
+- A method that is not a valid token
+- A header name with illegal characters
+- A `Content-Length` value that is not a sequence of digits
+- Two `Content-Length` headers with different values
+- A request target with an incomplete or invalid percent-escape
+- A request target with an encoded NUL byte or an encoded slash
+- A request without a `Host` header, or with two `Host` headers
+- A `Host` header value that is not a valid host
 
-1. Get the source code.
-2. Go to the project directory.
-3. Run this command:
+The read buffer grows when a request is larger than its initial size. A large request does not stop the parser.
 
-```sh
-go build ./...
-```
+The server sends a `501` response for a `Transfer-Encoding` value that it does not know. The server accepts `chunked`. The server sends a `400` response if `chunked` is not the last coding, or if `chunked` occurs two times.
 
-## Start the server
-
-Run this command:
-
-```sh
-go run ./cmd/httpserver
-```
-
-The server starts on port 42069. Send a request to make sure that the server operates correctly:
-
-```sh
-curl http://localhost:42069/
-```
-
-## Use the server in your code
-
-### A minimal server
-
-```go
-package main
-
-import (
- "httpfromtcp/internal/request"
- "httpfromtcp/internal/response"
- "httpfromtcp/internal/server"
-)
-
-func main() {
- srv, err := server.Serve(8080, func(w response.Writer, req *request.Request) {
-  w.WriteStatusLine(response.StatusOK)
-  h := response.GetDefaultHeaders(5)
-  w.WriteHeaders(h)
-  w.WriteBody([]byte("hello"))
- })
- if err != nil {
-  panic(err)
- }
- defer srv.Close()
- select {}
-}
-```
-
-### A server with a router and options
-
-> **Note:** The option functions are not complete at this time. The router package is complete, but the server does not use it yet. The example below shows the planned interface.
-
-The `Serve` function accepts functional options. Each option sets one part of the server. If you do not give an option, the server uses a default.
-
-```go
-r := router.New()
-r.Register("GET", "/users/:id", getUser)
-r.Register("GET", "/files/*path", getFile)
-
-srv, err := server.Serve(8080,
- server.WithRouter(r),
- server.WithErrorResponder(myErrorResponder),
-)
-```
-
-## The router
+### The router
 
 The router maps a route to a `router.Handler`, a function with the same shape as the server's handler. A successful lookup returns the handler and the captured segment values.
 
@@ -203,31 +232,7 @@ The router also obeys these fixed decisions:
 
 The router is a trie. Each node in the trie is one path segment. Two index types can hold the static segments of a node: a Go map (`New`) or a table that uses a polynomial rolling hash (`NewHashed`). When two hashes are equal, the table compares the full strings. This step prevents errors from hash collisions.
 
-A benchmark compares the two index types. Run it with `go test -bench . -benchmem ./internal/router`. The result: the map and the hash table have the same speed (approximately 150 ns for each lookup, for 10 to 1000 routes). The map stays the default.
-
-## The parser
-
-The parser is a state machine with these states: request line, headers, body, done, error.
-
-The parser accepts partial data. Each call to `parse` consumes the bytes that make complete parts. The parser returns the count of bytes that it consumed. The caller sends the bytes that remain in the next call.
-
-The parser rejects these inputs and the server sends a `400` response:
-
-- A malformed request line
-- A method that is not a valid token
-- A header name with illegal characters
-- A `Content-Length` value that is not a sequence of digits
-- Two `Content-Length` headers with different values
-- A request target with an incomplete or invalid percent-escape
-- A request target with an encoded NUL byte or an encoded slash
-- A request without a `Host` header, or with two `Host` headers
-- A `Host` header value that is not a valid host
-
-The read buffer grows when a request is larger than its initial size. A large request does not stop the parser.
-
-The server sends a `501` response for a `Transfer-Encoding` value that it does not know. The server accepts `chunked`. The server sends a `400` response if `chunked` is not the last coding, or if `chunked` occurs two times.
-
-## Chunked transfer encoding
+### Chunked transfer encoding
 
 The server reads and writes chunked bodies.
 
@@ -251,7 +256,20 @@ Test the decoder with raw bytes:
 printf 'POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ncat\r\n5\r\nhello\r\n0\r\n\r\n' | nc localhost 42069
 ```
 
-## Packages
+### The interfaces
+
+> **Note:** These interfaces are not complete at this time.
+
+The server depends on small interfaces, not on structs:
+
+- `Router` — finds a handler for a method and a path
+- `RequestParser` — reads a request from a connection
+- `Serializer` — writes a response to a connection
+- `ErrorResponder` — writes an error response for a status code
+
+You can replace each interface with your own type. The tests replace them with fake types. This design makes the tests simple and fast.
+
+### Packages
 
 | Package             | What it contains                                        |
 | ------------------- | ------------------------------------------------------- |
@@ -264,19 +282,6 @@ printf 'POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n
 | `cmd/httpserver`    | An example server                                       |
 | `cmd/tcplistener`   | A tool that prints the requests that it receives        |
 | `cmd/udpsender`     | A tool that sends UDP packets                           |
-
-## The interfaces
-
-> **Note:** These interfaces are not complete at this time.
-
-The server depends on small interfaces, not on structs:
-
-- `Router` — finds a handler for a method and a path
-- `RequestParser` — reads a request from a connection
-- `Serializer` — writes a response to a connection
-- `ErrorResponder` — writes an error response for a status code
-
-You can replace each interface with your own type. The tests replace them with fake types. This design makes the tests simple and fast.
 
 ## Run the tests
 
@@ -307,6 +312,25 @@ The test suite has these types of tests:
 - End-to-end tests: a real TCP client sends a request and examines the raw response.
 - Differential tests: the map index and the hash index of the router must give equal answers.
 - A collision test: two different segments with equal hashes must route to their own handlers.
+
+## AI usage
+
+This project is a study project. I wrote the code by hand. I used Claude as a tutor, not as a code generator.
+
+**What the AI did:**
+
+- It explained concepts: push-based against pull-based parsing, state machines, buffer compaction, and Go semantics such as labeled `break`.
+- It named the bugs in my code and the inputs that cause them. It did not correct the bugs.
+- It pointed me to the correct sections of RFC 9110, RFC 9112, and RFC 3986.
+- It designed practice exercises. I built two toy parsers before the chunked decoder: a delimiter-framed number list and a length-prefixed word format.
+- It wrote parts of this README and the `SERVER_HARDENING.md` document.
+
+**What the AI did not do:**
+
+- It did not write the parser, the router, the response writer, or the tests.
+- Tool writes are disabled in my configuration. The AI cannot edit the files in this repository.
+
+**Why:** I want to learn the protocol at the byte level. Generated code does not teach that. Each bug in this repository is a bug that I found and corrected.
 
 ## References
 
