@@ -1,29 +1,29 @@
 /*
 *
 * I NEED THIS
-func main() {
-    router = chi.NewRouter()
-    router.Use(middleware.Recoverer)
-    var err error
-    db, err = connect()
-    catch(err)
-    router.Use(ChangeMethod)
-    router.Get("/", GetAllArticles)
-    router.Route("/articles", func(r chi.Router) {
-        r.Get("/", NewArticle)
-        r.Post("/", CreateArticle)
-        r.Route("/{articleID}", func(r chi.Router) {
-            r.Use(ArticleCtx)
-            r.Get("/", GetArticle) // GET /articles/1234
-            r.Put("/", UpdateArticle)    // PUT /articles/1234
-            r.Delete("/", DeleteArticle) // DELETE /articles/1234
-            r.Get("/edit", EditArticle) // GET /articles/1234/edit
-        })
-    })
-    err = http.ListenAndServe(":8005", router)
-    catch(err)
-}
 
+	func main() {
+	    router = chi.NewRouter()
+	    router.Use(middleware.Recoverer)
+	    var err error
+	    db, err = connect()
+	    catch(err)
+	    router.Use(ChangeMethod)
+	    router.Get("/", GetAllArticles)
+	    router.Route("/articles", func(r chi.Router) {
+	        r.Get("/", NewArticle)
+	        r.Post("/", CreateArticle)
+	        r.Route("/{articleID}", func(r chi.Router) {
+	            r.Use(ArticleCtx)
+	            r.Get("/", GetArticle) // GET /articles/1234
+	            r.Put("/", UpdateArticle)    // PUT /articles/1234
+	            r.Delete("/", DeleteArticle) // DELETE /articles/1234
+	            r.Get("/edit", EditArticle) // GET /articles/1234/edit
+	        })
+	    })
+	    err = http.ListenAndServe(":8005", router)
+	    catch(err)
+	}
 */
 package router
 
@@ -295,4 +295,14 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 		r.Errors = append(r.Errors, err)
 	}
 	return r
+}
+
+func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
+	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
+	if err != nil {
+		response.Error(w, err.Error(), response.StatusInternalServerError, "text/plain")
+		return
+	}
+
+	match.Handler(w, req)
 }

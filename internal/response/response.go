@@ -32,10 +32,11 @@ func NewWriter(w io.Writer) *Writer {
 	}
 }
 
-func Error(w Writer, msg string, code StatusCode) {
+func Error(w Writer, msg string, code StatusCode, contentType string) {
 	_ = w.WriteStatusLine(code)
 
 	headers := GetDefaultHeaders(len(msg))
+	headers.Replace("content-type", contentType)
 	_ = w.WriteHeaders(headers)
 
 	_, _ = w.WriteBody([]byte(msg))

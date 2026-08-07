@@ -12,7 +12,11 @@ import (
 	"httpfromtcp/internal/response"
 )
 
-type Handler func(w response.Writer, req *request.Request)
+type HandlerFunc func(w response.Writer, req *request.Request)
+
+func (f HandlerFunc) ServeHTTP(w response.Writer, r *request.Request) {
+	f(w, r)
+}
 
 type Server struct {
 	handler  Handler
@@ -70,7 +74,7 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 		return
 	}
 
-	s.handler(*responseWriter, r)
+	s.handler.ServeHTTP(*responseWriter, r)
 }
 
 func (s *Server) runServer() {
@@ -82,6 +86,10 @@ func (s *Server) runServer() {
 
 		go s.handle(conn)
 	}
+}
+
+type Handler interface {
+	ServeHTTP(w response.Writer, req *request.Request)
 }
 
 func Serve(port uint16, handle Handler) (*Server, error) {
