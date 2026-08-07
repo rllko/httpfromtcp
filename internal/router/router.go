@@ -36,6 +36,18 @@ import (
 	"httpfromtcp/internal/response"
 )
 
+const NotFoundMessage = `
+	<html>
+	  <head>
+	    <title>404 Not Found</title>
+	  </head>
+	  <body>
+	    <h1>Not Found</h1>
+	    <p>The requested URL was not found on this server.</p>
+	  </body>
+	</html>
+	`
+
 type Handler func(w response.Writer, req *request.Request)
 
 var (
@@ -300,7 +312,12 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
 	if err != nil {
-		response.Error(w, err.Error(), response.StatusInternalServerError, "text/plain")
+		if errors.Is(err, ErrNotFound) {
+			w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+			return
+		}
+
+		w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
 		return
 	}
 

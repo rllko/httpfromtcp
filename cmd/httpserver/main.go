@@ -43,7 +43,7 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 	}()
 
 	if err != nil {
-		response.Error(w, string(""), response.StatusBadRequest)
+		w.Error(string(""), response.StatusBadRequest, "text/plain")
 		return
 	}
 
@@ -98,7 +98,7 @@ var myProblem router.Handler = func(w response.Writer, req *request.Request) {
   </body>
 </html>`
 
-	response.Error(w, body, response.StatusInternalServerError)
+	w.Error(body, response.StatusInternalServerError, "text/html")
 }
 
 var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
@@ -112,7 +112,7 @@ var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
   </body>
 </html>`
 
-	response.Error(w, body, response.StatusBadRequest)
+	w.Error(body, response.StatusBadRequest, "text/html")
 }
 
 var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) {
@@ -153,15 +153,7 @@ func main() {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
-	server, err := server.Serve(port, func(w response.Writer, req *request.Request) {
-		match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
-		if err != nil {
-			response.Error(w, err.Error(), response.StatusInternalServerError)
-			return
-		}
-
-		match.Handler(w, req)
-	})
+	server, err := server.Serve(port, r)
 	if err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}

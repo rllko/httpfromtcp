@@ -20,6 +20,7 @@ var (
 	StatusInternalServerError StatusCode = 500
 	StatusNotImplemented      StatusCode = 501
 	StatusLengthRequired      StatusCode = 411
+	StatusNotFound            StatusCode = 404
 )
 
 type Writer struct {
@@ -32,7 +33,7 @@ func NewWriter(w io.Writer) *Writer {
 	}
 }
 
-func Error(w Writer, msg string, code StatusCode, contentType string) {
+func (w *Writer) Error(msg string, code StatusCode, contentType string) {
 	_ = w.WriteStatusLine(code)
 
 	headers := GetDefaultHeaders(len(msg))
@@ -55,6 +56,8 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "501 Not Implemented")
 	case StatusLengthRequired:
 		statusLine = fmt.Append(statusLine, "411 Length Required")
+	case StatusNotFound:
+		statusLine = fmt.Append(statusLine, "404 Not Found")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}
