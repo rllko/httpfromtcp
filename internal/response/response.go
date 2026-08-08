@@ -2,8 +2,10 @@
 package response
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 
 	"httpfromtcp/internal/headers"
 )
@@ -30,6 +32,32 @@ type Writer struct {
 func NewWriter(w io.Writer) *Writer {
 	return &Writer{
 		writer: w,
+	}
+}
+
+func (w *Writer) JSON(data map[string]any, code StatusCode) {
+	err := w.WriteStatusLine(code)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	h := GetDefaultHeaders(0)
+	h.Replace("content-type", "application/json")
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	h.Replace("content-length", fmt.Sprintf("%d", len(jsonData)))
+	err = w.WriteHeaders(h)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	_, err = w.WriteBody(jsonData)
+	if err != nil {
+		log.Fatalf("error writing body: %v", err)
 	}
 }
 

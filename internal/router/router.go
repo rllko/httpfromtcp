@@ -34,9 +34,11 @@ import (
 
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
+	"httpfromtcp/internal/server"
 )
 
-const NotFoundMessage = `
+var notFoundEndpoint Handler = func(w response.Writer, req *request.Request) {
+	const NotFoundMessage = `
 	<html>
 	  <head>
 	    <title>404 Not Found</title>
@@ -47,6 +49,8 @@ const NotFoundMessage = `
 	  </body>
 	</html>
 	`
+	w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+}
 
 type Handler func(w response.Writer, req *request.Request)
 
@@ -311,11 +315,15 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 	return r
 }
 
+func (r *Router) NotFound(h server.HandlerFunc) {
+	notFoundEndpoint = Handler(h)
+}
+
 func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+			notFoundEndpoint(w, req)
 			return
 		}
 

@@ -153,18 +153,25 @@ func main() {
 		Get("/httpbin/*path", chunkedRequest).
 		Get("/video", videoEndpoint).
 		Post("/upload-file", uploadFile).
-		Get("/*name", router.Handler(func(w response.Writer, req *request.Request) {
+		Get("/json/*name", router.Handler(func(w response.Writer, req *request.Request) {
 			val, ok := req.PathValue("name")
 			if !ok {
 				w.Error("no name", response.StatusBadRequest, "text/plain")
 				return
 			}
-			w.RespondWithBody(
-				response.StatusOK,
-				"text/html",
-				[]byte(fmt.Sprintf("Hello %s", val)),
-			)
-		}))
+			testJSON := map[string]any{
+				"name":   val,
+				"peepee": 2,
+			}
+
+			w.JSON(testJSON, response.StatusOK)
+		})).
+		NotFound(func(w response.Writer, req *request.Request) {
+			errJSON := map[string]any{
+				"error": "not found",
+			}
+			w.JSON(errJSON, response.StatusNotFound)
+		})
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)
