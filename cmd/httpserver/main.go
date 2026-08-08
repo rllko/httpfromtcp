@@ -29,6 +29,7 @@ func toStr(bytes []byte) string {
 	return out.String()
 }
 
+// TODO: not sure if we should put this chunked stuff in the chunked.go
 var chunkedRequest router.Handler = func(w response.Writer, req *request.Request) {
 	h := response.GetDefaultHeaders(0)
 	// Every canned body in this handler is HTML; /video overrides.
@@ -37,15 +38,11 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 	val, ok := req.PathValue("path")
 	if !ok || val == "" {
 		w.Error("no path", response.StatusNotFound, "text/plain")
+		return
 	}
 	fmt.Printf("PATH: %s\n", val)
 	resp, err := http.Get("https://httpbin.org/" + val)
-	defer func() {
-		err := resp.Body.Close()
-		if err != nil {
-			log.Fatalf("error closing the response body")
-		}
-	}()
+	defer resp.Body.Close()
 
 	if err != nil {
 		w.Error(string(""), response.StatusBadRequest, "text/plain")
