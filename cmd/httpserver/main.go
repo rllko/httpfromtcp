@@ -34,7 +34,12 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 	// Every canned body in this handler is HTML; /video overrides.
 	h.Replace("content-type", "text/html")
 
-	resp, err := http.Get("https://httpbin.org/" + req.URL.Path[len("/httpbin/"):])
+	val, ok := req.PathValue("path")
+	if !ok || val == "" {
+		w.Error("no path", response.StatusNotFound, "text/plain")
+	}
+	fmt.Printf("PATH: %s\n", val)
+	resp, err := http.Get("https://httpbin.org/" + val)
 	defer func() {
 		err := resp.Body.Close()
 		if err != nil {
@@ -148,7 +153,7 @@ func main() {
 		Get("/httpbin/*path", chunkedRequest).
 		Get("/video", videoEndpoint).
 		Post("/upload-file", uploadFile).
-		Get("/{name}", router.Handler(func(w response.Writer, req *request.Request) {
+		Get("/*name", router.Handler(func(w response.Writer, req *request.Request) {
 			val, ok := req.PathValue("name")
 			if !ok {
 				w.Error("no name", response.StatusBadRequest, "text/plain")
