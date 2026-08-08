@@ -63,7 +63,7 @@ func TestRouteStatic(t *testing.T) {
 
 func TestRouteParamExtraction(t *testing.T) {
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "user")
+	mustRegister(t, r, "GET", "/users/{id}", "user")
 
 	m, err := r.Lookup("GET", "/users/42")
 	require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestRouteParamExtraction(t *testing.T) {
 
 func TestRouteMultipleParams(t *testing.T) {
 	r := New()
-	mustRegister(t, r, "GET", "/users/:uid/posts/:pid", "post")
+	mustRegister(t, r, "GET", "/users/{uid}/posts/{pid}", "post")
 
 	m, err := r.Lookup("GET", "/users/7/posts/99")
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestRouteWildcardEmptyRest(t *testing.T) {
 func TestPrecedenceStaticBeatsParam(t *testing.T) {
 	r := New()
 	mustRegister(t, r, "GET", "/users/me", "static")
-	mustRegister(t, r, "GET", "/users/:id", "param")
+	mustRegister(t, r, "GET", "/users/{id}", "param")
 
 	m, err := r.Lookup("GET", "/users/me")
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestPrecedenceStaticBeatsParam(t *testing.T) {
 
 func TestPrecedenceParamBeatsWildcard(t *testing.T) {
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "param")
+	mustRegister(t, r, "GET", "/users/{id}", "param")
 	mustRegister(t, r, "GET", "/users/*rest", "wild")
 
 	m, err := r.Lookup("GET", "/users/42")
@@ -142,7 +142,7 @@ func TestBacktracking(t *testing.T) {
 	// The classic trie-router bug: the static "b" node exists but
 	// dead-ends at "d"; the walk must back out and retry via :x.
 	r := New()
-	mustRegister(t, r, "GET", "/a/:x/c", "param-route")
+	mustRegister(t, r, "GET", "/a/{x}/c", "param-route")
 	mustRegister(t, r, "GET", "/a/b/d", "static-route")
 
 	m, err := r.Lookup("GET", "/a/b/c")
@@ -201,14 +201,14 @@ func TestRegisterDuplicateRoute(t *testing.T) {
 func TestRegisterParamNameConflict(t *testing.T) {
 	// "/users/:id" then "/users/:name": same position, two names.
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "a")
-	require.ErrorIs(t, r.Register("GET", "/users/:name/posts", mark("b")), ErrParamConflict)
+	mustRegister(t, r, "GET", "/users/{id}", "a")
+	require.ErrorIs(t, r.Register("GET", "/users/{name}/posts", mark("b")), ErrParamConflict)
 }
 
 func TestRegisterSameParamNameIsFine(t *testing.T) {
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "one")
-	mustRegister(t, r, "GET", "/users/:id/posts", "two")
+	mustRegister(t, r, "GET", "/users/{id}", "one")
+	mustRegister(t, r, "GET", "/users/{id}/posts", "two")
 
 	m, err := r.Lookup("GET", "/users/5/posts")
 	require.NoError(t, err)
@@ -226,7 +226,7 @@ func TestRegisterInvalidPatterns(t *testing.T) {
 	assert.ErrorIs(t, r.Register("GET", "a/b", mark("h")), ErrInvalidPattern, "no leading slash")
 	assert.ErrorIs(t, r.Register("GET", "/a//b", mark("h")), ErrInvalidPattern, "empty segment")
 	assert.ErrorIs(t, r.Register("GET", "/a/", mark("h")), ErrInvalidPattern, "trailing slash")
-	assert.ErrorIs(t, r.Register("GET", "/a/:", mark("h")), ErrInvalidPattern, "nameless param")
+	assert.ErrorIs(t, r.Register("GET", "/a/{}", mark("h")), ErrInvalidPattern, "nameless param")
 	assert.ErrorIs(t, r.Register("GET", "/a/*", mark("h")), ErrInvalidPattern, "nameless wildcard")
 	assert.ErrorIs(t, r.Register("", "/a", mark("h")), ErrInvalidMethod, "empty method")
 }
@@ -246,7 +246,7 @@ func TestLookupDoubledSlash(t *testing.T) {
 	// matches an empty segment.
 	r := New()
 	mustRegister(t, r, "GET", "/a/b", "ab")
-	mustRegister(t, r, "GET", "/users/:id/posts", "posts")
+	mustRegister(t, r, "GET", "/users/{id}/posts", "posts")
 
 	_, err := r.Lookup("GET", "/a//b")
 	require.ErrorIs(t, err, ErrNotFound)
@@ -267,11 +267,11 @@ func TestLookupLiteralColonInRequest(t *testing.T) {
 	// ':' is only special at registration. As request DATA it is an
 	// ordinary character and lands in the param like anything else.
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "u")
+	mustRegister(t, r, "GET", "/users/{id}", "u")
 
-	m, err := r.Lookup("GET", "/users/:id")
+	m, err := r.Lookup("GET", "/users/{id}")
 	require.NoError(t, err)
-	assert.Equal(t, ":id", m.Params["id"])
+	assert.Equal(t, "{id}", m.Params["id"])
 }
 
 func TestLookupPathWithoutLeadingSlash(t *testing.T) {
@@ -316,7 +316,7 @@ func TestConcurrentLookups(t *testing.T) {
 	// parallel. Run with -race. (No called() here — lastCalled is a
 	// plain global and this test only exercises Lookup itself.)
 	r := New()
-	mustRegister(t, r, "GET", "/users/:id", "u")
+	mustRegister(t, r, "GET", "/users/{id}", "u")
 	mustRegister(t, r, "GET", "/files/*path", "f")
 
 	var wg sync.WaitGroup

@@ -1,29 +1,29 @@
 /*
 *
 * I NEED THIS
-func main() {
-    router = chi.NewRouter()
-    router.Use(middleware.Recoverer)
-    var err error
-    db, err = connect()
-    catch(err)
-    router.Use(ChangeMethod)
-    router.Get("/", GetAllArticles)
-    router.Route("/articles", func(r chi.Router) {
-        r.Get("/", NewArticle)
-        r.Post("/", CreateArticle)
-        r.Route("/{articleID}", func(r chi.Router) {
-            r.Use(ArticleCtx)
-            r.Get("/", GetArticle) // GET /articles/1234
-            r.Put("/", UpdateArticle)    // PUT /articles/1234
-            r.Delete("/", DeleteArticle) // DELETE /articles/1234
-            r.Get("/edit", EditArticle) // GET /articles/1234/edit
-        })
-    })
-    err = http.ListenAndServe(":8005", router)
-    catch(err)
-}
 
+	func main() {
+	    router = chi.NewRouter()
+	    router.Use(middleware.Recoverer)
+	    var err error
+	    db, err = connect()
+	    catch(err)
+	    router.Use(ChangeMethod)
+	    router.Get("/", GetAllArticles)
+	    router.Route("/articles", func(r chi.Router) {
+	        r.Get("/", NewArticle)
+	        r.Post("/", CreateArticle)
+	        r.Route("/{articleID}", func(r chi.Router) {
+	            r.Use(ArticleCtx)
+	            r.Get("/", GetArticle) // GET /articles/1234
+	            r.Put("/", UpdateArticle)    // PUT /articles/1234
+	            r.Delete("/", DeleteArticle) // DELETE /articles/1234
+	            r.Get("/edit", EditArticle) // GET /articles/1234/edit
+	        })
+	    })
+	    err = http.ListenAndServe(":8005", router)
+	    catch(err)
+	}
 */
 package router
 
@@ -34,7 +34,38 @@ import (
 
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
+	"httpfromtcp/internal/server"
 )
+
+var notFoundEndpoint Handler = func(w response.Writer, req *request.Request) {
+	const NotFoundMessage = `
+	<html>
+	  <head>
+	    <title>404 Not Found</title>
+	  </head>
+	  <body>
+	    <h1>Not Found</h1>
+	    <p>The requested URL was not found on this server.</p>
+	  </body>
+	</html>
+	`
+	w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+}
+
+var allowEndpoint Handler = func(w response.Writer, req *request.Request) {
+	const AllowedMessage = `
+	<html>
+	  <head>
+	    <title>405 Method Not Allowed</title>
+	  </head>
+	  <body>
+	    <h1>Method Not Allowed</h1>
+	    <p>The requested method is not allowed on this server.</p>
+	  </body>
+	</html>
+	`
+	w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html")
+}
 
 type Handler func(w response.Writer, req *request.Request)
 
@@ -131,17 +162,19 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 			// must be canonical.
 			return ErrInvalidPattern
 
-		case seg[0] == ':':
-			name := seg[1:]
+		case seg[0] == '{':
+			if len(seg) < 3 || seg[len(seg)-1] != '}' {
+				return ErrInvalidPattern
+			}
+			name := seg[1 : len(seg)-1]
 			if name == "" {
 				return ErrInvalidPattern
 			}
+
 			if n.paramChild == nil {
 				n.paramChild = r.newNode()
 				n.paramName = name
 			} else if n.paramName != name {
-				// "/users/:id" then "/users/:name" — same position,
-				// two names. One of them is a bug; refuse.
 				return ErrParamConflict
 			}
 			n = n.paramChild
@@ -295,4 +328,36 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 		r.Errors = append(r.Errors, err)
 	}
 	return r
+}
+
+func (r *Router) NotFound(h server.HandlerFunc) {
+	notFoundEndpoint = Handler(h)
+}
+
+func (r *Router) Allow(h server.HandlerFunc) {
+	allowEndpoint = Handler(h)
+}
+
+func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
+	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			notFoundEndpoint(w, req)
+			return
+		}
+
+		if errors.Is(err, ErrMethodNotAllowed) {
+			allowEndpoint(w, req)
+			return
+		}
+
+		w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
+		return
+	}
+
+	for k, v := range match.Params {
+		req.SetPathValue(k, v)
+	}
+
+	match.Handler(w, req)
 }

@@ -49,7 +49,7 @@ func helloHandler(w response.Writer, req *request.Request) {
 func TestHandleWritesExactlyOneResponse(t *testing.T) {
 	// The handler owns the entire response — handle() must not write a
 	// second status line or header block after it.
-	s := &Server{handler: helloHandler}
+	s := &Server{handler: HandlerFunc(helloHandler)}
 	conn := newFakeConn("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 	s.handle(conn)
 
@@ -63,7 +63,7 @@ func TestHandleWritesExactlyOneResponse(t *testing.T) {
 }
 
 func TestHandleMalformedRequestGets400(t *testing.T) {
-	s := &Server{handler: helloHandler}
+	s := &Server{handler: HandlerFunc(helloHandler)}
 	conn := newFakeConn("this is not http\r\n\r\n")
 	s.handle(conn)
 
@@ -75,7 +75,7 @@ func TestHandleMalformedRequestGets400(t *testing.T) {
 
 func TestHandleEmptyConnection(t *testing.T) {
 	// Client connects and immediately closes: no panic, connection closed.
-	s := &Server{handler: helloHandler}
+	s := &Server{handler: HandlerFunc(helloHandler)}
 	conn := newFakeConn("")
 	s.handle(conn)
 	assert.True(t, conn.closed)
@@ -112,7 +112,7 @@ func doRequest(t *testing.T, addr string) string {
 
 func TestServeRespondsOverTCP(t *testing.T) {
 	port := freePort(t)
-	srv, err := Serve(port, helloHandler)
+	srv, err := Serve(port, HandlerFunc(helloHandler))
 	require.NoError(t, err)
 	defer srv.Close()
 
@@ -125,7 +125,7 @@ func TestCloseStopsAccepting(t *testing.T) {
 	// Close() closes the listener, which unblocks Accept and stops the
 	// server accepting new connections.
 	port := freePort(t)
-	srv, err := Serve(port, helloHandler)
+	srv, err := Serve(port, HandlerFunc(helloHandler))
 	require.NoError(t, err)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -145,7 +145,7 @@ func TestCloseStopsAccepting(t *testing.T) {
 
 func TestConcurrentConnections(t *testing.T) {
 	port := freePort(t)
-	srv, err := Serve(port, helloHandler)
+	srv, err := Serve(port, HandlerFunc(helloHandler))
 	require.NoError(t, err)
 	defer srv.Close()
 

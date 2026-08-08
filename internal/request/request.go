@@ -40,6 +40,8 @@ type Request struct {
 	// chunked encoding state tracking
 	currentChunkSize int
 	chunkBytesRead   int
+
+	PathValues map[string]string
 }
 
 type StatusCode int
@@ -89,11 +91,12 @@ const (
 
 func NewRequest() *Request {
 	return &Request{
-		state:    StateInit,
-		Headers:  headers.NewHeaders(),
-		Body:     "",
-		URL:      &url.URL{},
-		Trailers: *headers.NewHeaders(),
+		state:      StateInit,
+		Headers:    headers.NewHeaders(),
+		Body:       "",
+		URL:        &url.URL{},
+		Trailers:   *headers.NewHeaders(),
+		PathValues: map[string]string{},
 	}
 }
 
@@ -446,4 +449,13 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	}
 
 	return request, nil
+}
+
+func (r *Request) SetPathValue(name string, value string) {
+	r.PathValues[name] = value
+}
+
+func (r *Request) PathValue(name string) (string, bool) {
+	val, ok := r.PathValues[name]
+	return val, ok
 }

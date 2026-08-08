@@ -29,21 +29,23 @@ func toStr(bytes []byte) string {
 	return out.String()
 }
 
+// TODO: not sure if we should put this chunked stuff in the chunked.go
 var chunkedRequest router.Handler = func(w response.Writer, req *request.Request) {
 	h := response.GetDefaultHeaders(0)
 	// Every canned body in this handler is HTML; /video overrides.
 	h.Replace("content-type", "text/html")
 
-	resp, err := http.Get("https://httpbin.org/" + req.URL.Path[len("/httpbin/"):])
-	defer func() {
-		err := resp.Body.Close()
-		if err != nil {
-			log.Fatalf("error closing the response body")
-		}
-	}()
+	val, ok := req.PathValue("path")
+	if !ok || val == "" {
+		w.Error("no path", response.StatusNotFound, "text/plain")
+		return
+	}
+	fmt.Printf("PATH: %s\n", val)
+	resp, err := http.Get("https://httpbin.org/" + val)
+	defer resp.Body.Close()
 
 	if err != nil {
-		response.Error(w, string(""), response.StatusBadRequest)
+		w.Error(string(""), response.StatusBadRequest, "text/plain")
 		return
 	}
 
@@ -98,7 +100,7 @@ var myProblem router.Handler = func(w response.Writer, req *request.Request) {
   </body>
 </html>`
 
-	response.Error(w, body, response.StatusInternalServerError)
+	w.Error(body, response.StatusInternalServerError, "text/html")
 }
 
 var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
@@ -112,7 +114,7 @@ var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
   </body>
 </html>`
 
-	response.Error(w, body, response.StatusBadRequest)
+	w.Error(body, response.StatusBadRequest, "text/html")
 }
 
 var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) {
@@ -147,21 +149,35 @@ func main() {
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
 		Get("/video", videoEndpoint).
-		Post("/upload-file", uploadFile)
+		Post("/upload-file", uploadFile).
+		Get("/json/*name", router.Handler(func(w response.Writer, req *request.Request) {
+			val, ok := req.PathValue("name")
+			if !ok {
+				w.Error("no name", response.StatusBadRequest, "text/plain")
+				return
+			}
+			w.JSON(map[string]any{
+				"name":   val,
+				"peepee": 2,
+			}, response.StatusOK)
+		}))
+
+	r.NotFound(func(w response.Writer, req *request.Request) {
+		errJSON := map[string]any{
+			"error": "not found",
+		}
+		w.JSON(errJSON, response.StatusNotFound)
+	})
+
+	r.Allow(func(w response.Writer, req *request.Request) {
+		w.Error("", response.StatusMethodNotAllowed, "")
+	})
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
-	server, err := server.Serve(port, func(w response.Writer, req *request.Request) {
-		match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
-		if err != nil {
-			response.Error(w, err.Error(), response.StatusInternalServerError)
-			return
-		}
-
-		match.Handler(w, req)
-	})
+	server, err := server.Serve(port, r)
 	if err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}

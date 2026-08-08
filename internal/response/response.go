@@ -2,8 +2,10 @@
 package response
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 
 	"httpfromtcp/internal/headers"
 )
@@ -20,6 +22,8 @@ var (
 	StatusInternalServerError StatusCode = 500
 	StatusNotImplemented      StatusCode = 501
 	StatusLengthRequired      StatusCode = 411
+	StatusNotFound            StatusCode = 404
+	StatusMethodNotAllowed    StatusCode = 405
 )
 
 type Writer struct {
@@ -32,10 +36,37 @@ func NewWriter(w io.Writer) *Writer {
 	}
 }
 
-func Error(w Writer, msg string, code StatusCode) {
+func (w *Writer) JSON(data map[string]any, code StatusCode) {
+	err := w.WriteStatusLine(code)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	h := GetDefaultHeaders(0)
+	h.Replace("content-type", "application/json")
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	h.Replace("content-length", fmt.Sprintf("%d", len(jsonData)))
+	err = w.WriteHeaders(h)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+
+	_, err = w.WriteBody(jsonData)
+	if err != nil {
+		log.Fatalf("error writing body: %v", err)
+	}
+}
+
+func (w *Writer) Error(msg string, code StatusCode, contentType string) {
 	_ = w.WriteStatusLine(code)
 
 	headers := GetDefaultHeaders(len(msg))
+	headers.Replace("content-type", contentType)
 	_ = w.WriteHeaders(headers)
 
 	_, _ = w.WriteBody([]byte(msg))
@@ -54,6 +85,10 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "501 Not Implemented")
 	case StatusLengthRequired:
 		statusLine = fmt.Append(statusLine, "411 Length Required")
+	case StatusNotFound:
+		statusLine = fmt.Append(statusLine, "404 Not Found")
+	case StatusMethodNotAllowed:
+		statusLine = fmt.Append(statusLine, "405 Method Not Allowed")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}
