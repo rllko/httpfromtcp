@@ -28,6 +28,10 @@ type HandlerError struct {
 	Message    string
 }
 
+type Handler interface {
+	ServeHTTP(w response.Writer, req *request.Request)
+}
+
 func (h *HandlerError) Write(w response.Writer) {
 	err := w.WriteStatusLine(h.StatusCode)
 	if err != nil {
@@ -86,10 +90,6 @@ func (s *Server) runServer() {
 
 		go s.handle(conn)
 	}
-}
-
-type Handler interface {
-	ServeHTTP(w response.Writer, req *request.Request)
 }
 
 func Serve(port uint16, handle Handler) (*Server, error) {
