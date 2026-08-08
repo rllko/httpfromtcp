@@ -143,17 +143,19 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 			// must be canonical.
 			return ErrInvalidPattern
 
-		case seg[0] == ':':
-			name := seg[1:]
+		case seg[0] == '{':
+			if len(seg) < 3 || seg[len(seg)-1] != '}' {
+				return ErrInvalidPattern
+			}
+			name := seg[1 : len(seg)-1]
 			if name == "" {
 				return ErrInvalidPattern
 			}
+
 			if n.paramChild == nil {
 				n.paramChild = r.newNode()
 				n.paramName = name
 			} else if n.paramName != name {
-				// "/users/:id" then "/users/:name" — same position,
-				// two names. One of them is a bug; refuse.
 				return ErrParamConflict
 			}
 			n = n.paramChild
@@ -319,6 +321,10 @@ func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 
 		w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
 		return
+	}
+
+	for k, v := range match.Params {
+		req.SetPathValue(k, v)
 	}
 
 	match.Handler(w, req)

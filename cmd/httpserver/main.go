@@ -147,7 +147,19 @@ func main() {
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
 		Get("/video", videoEndpoint).
-		Post("/upload-file", uploadFile)
+		Post("/upload-file", uploadFile).
+		Get("/{name}", router.Handler(func(w response.Writer, req *request.Request) {
+			val, ok := req.PathValue("name")
+			if !ok {
+				w.Error("no name", response.StatusBadRequest, "text/plain")
+				return
+			}
+			w.RespondWithBody(
+				response.StatusOK,
+				"text/html",
+				[]byte(fmt.Sprintf("Hello %s", val)),
+			)
+		}))
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)
