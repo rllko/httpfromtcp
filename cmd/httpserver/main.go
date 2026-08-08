@@ -159,19 +159,22 @@ func main() {
 				w.Error("no name", response.StatusBadRequest, "text/plain")
 				return
 			}
-			testJSON := map[string]any{
+			w.JSON(map[string]any{
 				"name":   val,
 				"peepee": 2,
-			}
+			}, response.StatusOK)
+		}))
 
-			w.JSON(testJSON, response.StatusOK)
-		})).
-		NotFound(func(w response.Writer, req *request.Request) {
-			errJSON := map[string]any{
-				"error": "not found",
-			}
-			w.JSON(errJSON, response.StatusNotFound)
-		})
+	r.NotFound(func(w response.Writer, req *request.Request) {
+		errJSON := map[string]any{
+			"error": "not found",
+		}
+		w.JSON(errJSON, response.StatusNotFound)
+	})
+
+	r.Allow(func(w response.Writer, req *request.Request) {
+		w.Error("", response.StatusMethodNotAllowed, "")
+	})
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)

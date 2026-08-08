@@ -52,6 +52,21 @@ var notFoundEndpoint Handler = func(w response.Writer, req *request.Request) {
 	w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
 }
 
+var allowEndpoint Handler = func(w response.Writer, req *request.Request) {
+	const AllowedMessage = `
+	<html>
+	  <head>
+	    <title>405 Method Not Allowed</title>
+	  </head>
+	  <body>
+	    <h1>Method Not Allowed</h1>
+	    <p>The requested method is not allowed on this server.</p>
+	  </body>
+	</html>
+	`
+	w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html")
+}
+
 type Handler func(w response.Writer, req *request.Request)
 
 var (
@@ -319,11 +334,20 @@ func (r *Router) NotFound(h server.HandlerFunc) {
 	notFoundEndpoint = Handler(h)
 }
 
+func (r *Router) Allow(h server.HandlerFunc) {
+	allowEndpoint = Handler(h)
+}
+
 func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			notFoundEndpoint(w, req)
+			return
+		}
+
+		if errors.Is(err, ErrMethodNotAllowed) {
+			allowEndpoint(w, req)
 			return
 		}
 
