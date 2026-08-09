@@ -8,7 +8,6 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
 
 ## Contents
 
-- [Project status](#project-status)
 - [What the project does](#what-the-project-does)
 - [Features](#features)
 - [Getting started](#getting-started)
@@ -24,28 +23,10 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
   - [The router](#the-router)
   - [Chunked transfer encoding](#chunked-transfer-encoding)
   - [Packages](#packages)
+  - [Handler interface](#the-servers-handler-interface)
 - [Run the tests](#run-the-tests)
 - [AI usage](#ai-usage)
 - [References](#references)
-
-## Project status
-
-Done:
-
-- [x] Resumable HTTP/1.1 request parser (request line, headers, body, done, error states)
-- [x] Percent-decoding of the request target, quoted-strings, and header parameters
-- [x] Host validation for IPv4, IPv6, and registered names
-- [x] Strict `Content-Length` parsing
-- [x] Chunked request-body decoder with trailer fields
-- [x] Chunked response writer
-- [x] Trie router with static, `:param`, and `*wildcard` segments
-- [x] Polynomial rolling-hash index with a benchmark against a Go map
-- [x] Test suite: split-read, malformed-input, end-to-end, differential, and collision tests
-
-Not done yet:
-
-- [ ] **Size limits for chunked requests.** The decoder does not limit the body size, the size line, or the trailer section yet.
-- [ ] **Router wiring with interfaces and functional options.**
 
 ## What the project does
 
@@ -61,9 +42,9 @@ The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A requ
 - Header parameters, for example `text/html; charset=utf-8` (RFC 9110 §5.6.6)
 - Host validation for IPv4, IPv6, and registered names (RFC 9110 §7.2)
 - Chunked transfer encoding for request and response bodies (RFC 9112 §7.1)
-- A trie router with static segments, `:param` segments, and `*wildcard` segments
+- A trie router with static segments, `{name}` segments, and `*wildcard` segments
+- Buffered response headers with an implicit commit on first body write
 - A polynomial rolling hash for segment comparison, with a benchmark against a map
-- Small interfaces, dependency injection, and functional options
 - A large test suite with split-read tests and malformed-input tests
 
 ## Getting started
@@ -104,25 +85,43 @@ curl http://localhost:42069/
 package main
 
 import (
+	"log"
+
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
+	"httpfromtcp/internal/router"
 	"httpfromtcp/internal/server"
 )
 
 func main() {
-	srv, err := server.Serve(8080, func(w response.Writer, req *request.Request) {
-		w.WriteStatusLine(response.StatusOK)
-		h := response.GetDefaultHeaders(5)
-		w.WriteHeaders(h)
+	r := router.New()
+
+	r.Get("/", func(w response.Writer, req *request.Request) {
+		w.Header().Set("Content-type", "text/plain")
 		w.WriteBody([]byte("hello"))
+	}).
+	Get("/users/{id}", func(w response.Writer, req *request.Request) {
+		id, _ := req.PathValue("id")
+		w.WriteJSON(map[string]any{"id": id}, response.StatusOK)
 	})
+
+	// registration errors are collected, not returned. Check them before you listen.
+	if err := r.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	srv, err := server.Serve(8080, r)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer srv.Close()
 	select {}
 }
 ```
+
+The writer buffers headers. Set them in any order; the first `WriteBody`,
+`WriteHeaders`, or `Error` call commits the status line and the header block.
+A body write with nothing committed sends `200 OK`.
 
 ## Architecture
 
@@ -141,8 +140,8 @@ flowchart TD
     C -->|bad input| E[400 / 501 error]
     C -->|complete request| F[Router.Lookup by method and path]
     F -->|match| G[Handler]
-    F -->|no path| H[404 Not Found]
-    F -->|wrong method| I[405 with Allow header]
+    F -->|no path| H[404: custom handler or built-in]
+    F -->|wrong method| I[405: Allow header, then custom handler or built-in]
     G --> J[response.Writer:
     status line, headers, body]
     E --> J
@@ -208,7 +207,7 @@ You register a route with a method and a path pattern. A path pattern has three 
 | Segment type | Example  | What it matches                          |
 | ------------ | -------- | ---------------------------------------- |
 | Static       | `/users` | Only the exact text `users`              |
-| Param        | `/:id`   | One segment with any value               |
+| Param        | `/{id}`  | One segment with any value               |
 | Wildcard     | `/*path` | All the segments that remain in the path |
 
 The router obeys these rules:
@@ -223,9 +222,18 @@ The router obeys these rules:
 
 `Lookup` returns one of two errors when it does not find a handler. `ErrNotFound` means no method has the path (404). `ErrMethodNotAllowed` means a different method has the path (405). The `Allowed` function lists the methods for the `Allow` header of a 405 response.
 
-The router also obeys these fixed decisions:
+Handlers read captured segments with `req.PathValue(name)`. The values are stored on the request, so concurrent requests never share them. The router
+writes them just before it calls the handler.
 
-- Paths are case-sensitive.
+The router is the server's handler. `Router.ServeHTTP` looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler; on `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
+
+An application replaces either page with `r.NotFound(h)` and `r.Allow(h)`. Neither chains — a fallback is not a route. When you set neither, the router serves its own HTML pages. The `Allow` header is set by the router before it calls the 405 handler, so a replacement page cannot omit it.
+
+`Get`, `Post`, `Put`, `Patch`, and `Delete` return the router so calls chain.
+They do not return an error. Registration errors collect in the router; call
+`Err()` before you start the listener.
+
+The router also obeys these fixed decisions:
 - `/a` and `/a/` are different paths. The router does not remove slashes.
 - A param does not match an empty segment.
 - A wildcard needs the slash: `/files/*path` matches `/files/` but not `/files`.
@@ -256,18 +264,46 @@ Test the decoder with raw bytes:
 printf 'POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ncat\r\n5\r\nhello\r\n0\r\n\r\n' | nc localhost 42069
 ```
 
-### The interfaces
+### The server's handler interface
 
-> **Note:** These interfaces are not complete at this time.
+The server depends on one interface:
 
-The server depends on small interfaces, not on structs:
+```go
+type Handler interface {
+	ServeHTTP(w response.Writer, req *request.Request)
+}
+```
 
-- `Router` — finds a handler for a method and a path
-- `RequestParser` — reads a request from a connection
-- `Serializer` — writes a response to a connection
-- `ErrorResponder` — writes an error response for a status code
+`server.Serve` takes a port and a `Handler`. `*router.Router` implements the
+interface, so an application registers its routes and passes the router:
 
-You can replace each interface with your own type. The tests replace them with fake types. This design makes the tests simple and fast.
+```go
+srv, err := server.Serve(8080, r)
+```
+
+A test that needs one handler and no route table uses `server.HandlerFunc`.
+The type is a function with the handler's shape, and its `ServeHTTP` method
+calls itself:
+
+```go
+type HandlerFunc func(w response.Writer, req *request.Request)
+
+func (f HandlerFunc) ServeHTTP(w response.Writer, r *request.Request) {
+	f(w, r)
+}
+```
+
+This is the same adapter that `http.HandlerFunc` uses in the standard library.
+A plain function becomes a `Handler` with a type conversion, not a new struct.
+
+The server writes a response by itself in one case only: a request that the
+parser rejected. The server sends the status that the parser chose, `400` for
+a malformed request and `501` for a transfer coding it does not know.
+
+After a successful parse the handler owns the whole response: the status line,
+the headers, and the body. The server writes nothing after `ServeHTTP` returns.
+A second write would put a second response on the same connection. The server
+handles one request for each connection and then closes it.
 
 ### Packages
 
@@ -276,12 +312,10 @@ You can replace each interface with your own type. The tests replace them with f
 | `internal/request`  | The request parser and its state machine                |
 | `internal/headers`  | The header map, quoted-strings, and header parameters   |
 | `internal/url`      | Percent-decoding, the path/query split, host validation |
-| `internal/response` | The response writer                                     |
+| `internal/response` | The buffered response writer                            |
 | `internal/router`   | The trie router and the rolling hash                    |
-| `internal/server`   | The TCP listener, the options, and the interfaces       |
+| `internal/server`   | The TCP listener and the handler interface              |
 | `cmd/httpserver`    | An example server                                       |
-| `cmd/tcplistener`   | A tool that prints the requests that it receives        |
-| `cmd/udpsender`     | A tool that sends UDP packets                           |
 
 ## Run the tests
 
@@ -323,7 +357,6 @@ This project is a study project. I wrote the code by hand. I used Claude as a tu
 - It named the bugs in my code and the inputs that cause them. It did not correct the bugs.
 - It pointed me to the correct sections of RFC 9110, RFC 9112, and RFC 3986.
 - It designed practice exercises. I built two toy parsers before the chunked decoder: a delimiter-framed number list and a length-prefixed word format.
-- It wrote parts of this README and the `SERVER_HARDENING.md` document.
 
 **What the AI did not do:**
 
