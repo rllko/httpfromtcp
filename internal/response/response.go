@@ -2,8 +2,10 @@
 package response
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 
 	"httpfromtcp/internal/headers"
 )
@@ -20,23 +22,73 @@ var (
 	StatusInternalServerError StatusCode = 500
 	StatusNotImplemented      StatusCode = 501
 	StatusLengthRequired      StatusCode = 411
+	StatusNotFound            StatusCode = 404
+	StatusMethodNotAllowed    StatusCode = 405
 )
 
 type Writer struct {
-	writer io.Writer
+	writer     io.Writer
+	header     *headers.Headers
+	sentHeader bool
 }
 
 func NewWriter(w io.Writer) *Writer {
+	h := headers.NewHeaders()
+	h.Set("Connection", "close")
+
 	return &Writer{
-		writer: w,
+		writer:     w,
+		header:     h,
+		sentHeader: false,
 	}
 }
 
-func Error(w Writer, msg string, code StatusCode) {
+func (w *Writer) HasSentHeader() bool {
+	return w.sentHeader
+}
+
+func (w *Writer) Header() *headers.Headers {
+	return w.header
+}
+
+func (w *Writer) WriteJSON(data map[string]any, code StatusCode) {
+	err := w.WriteStatusLine(code)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+		return
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+		return
+	}
+
+	w.Header().Replace("content-type", "application/json")
+	w.Header().Replace("content-length", fmt.Sprintf("%d", len(jsonData)))
+
+	err = w.WriteHeaders()
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+		return
+	}
+
+	_, err = w.WriteBody(jsonData)
+	if err != nil {
+		w.Error("something went wrong", code, "text/plain")
+	}
+}
+
+func (w *Writer) Error(msg string, code StatusCode, contentType string) {
 	_ = w.WriteStatusLine(code)
 
-	headers := GetDefaultHeaders(len(msg))
-	_ = w.WriteHeaders(headers)
+	if contentType != "" {
+		w.Header().Replace("content-type", contentType)
+	}
+
+	w.Header().Replace("content-length", strconv.Itoa(len(msg)))
+
+	_ = w.WriteHeaders()
 
 	_, _ = w.WriteBody([]byte(msg))
 }
@@ -54,6 +106,10 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "501 Not Implemented")
 	case StatusLengthRequired:
 		statusLine = fmt.Append(statusLine, "411 Length Required")
+	case StatusNotFound:
+		statusLine = fmt.Append(statusLine, "404 Not Found")
+	case StatusMethodNotAllowed:
+		statusLine = fmt.Append(statusLine, "405 Method Not Allowed")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}
@@ -63,40 +119,10 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 	return err
 }
 
-func GetDefaultHeaders(contentLen int) *headers.Headers {
-	h := headers.NewHeaders()
-	h.Set("Content-type", "text/plain")
-	h.Set("Connection", "close")
-	h.Set("Content-length", fmt.Sprintf("%d", contentLen))
-	return h
-}
-
-func (w *Writer) RespondWithBody(statusCode StatusCode, contentType string, body []byte) error {
-	h := GetDefaultHeaders(len(body))
-	h.Replace("Content-type", contentType)
-
-	err := w.WriteStatusLine(statusCode)
-	if err != nil {
-		return err
-	}
-
-	err = w.WriteHeaders(h)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.WriteBody(body)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (w *Writer) WriteHeaders(headers *headers.Headers) error {
+func (w *Writer) WriteHeaders() error {
 	var err error
 	out := []byte{}
-	headers.ForEach(func(n string, v string) {
+	w.header.ForEach(func(n string, v string) {
 		if err != nil {
 			return
 		}
@@ -106,10 +132,15 @@ func (w *Writer) WriteHeaders(headers *headers.Headers) error {
 	out = fmt.Append(out, "\r\n")
 
 	_, err = w.writer.Write(out)
+	w.sentHeader = true
 	return err
 }
 
 func (w *Writer) WriteBody(body []byte) (int, error) {
+	if !w.sentHeader {
+		_ = w.WriteStatusLine(200)
+		_ = w.WriteHeaders()
+	}
 	n, err := w.writer.Write(body)
 	return n, err
 }
@@ -124,16 +155,16 @@ func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
 		return 0, err
 	}
 
-	_, err = w.WriteBody(p)
+	_, err = w.writer.Write(p)
 	if err != nil {
 		return 0, err
 	}
 
-	n, err := w.WriteBody([]byte("\r\n"))
+	n, err := w.writer.Write([]byte("\r\n"))
 	return n, err
 }
 
-// RFC 9112 7.1
+// WriteChunkedBodyDone - RFC 9112 7.1
 func (w *Writer) WriteChunkedBodyDone() (int, error) {
 	n, err := w.writer.Write([]byte("0\r\n\r\n"))
 	return n, err
@@ -143,5 +174,18 @@ func (w *Writer) WriteTrailers(h *headers.Headers) error {
 	if _, err := w.writer.Write([]byte("0\r\n")); err != nil {
 		return err
 	}
-	return w.WriteHeaders(h)
+
+	var err error
+	out := []byte{}
+	h.ForEach(func(n string, v string) {
+		if err != nil {
+			return
+		}
+		out = fmt.Appendf(out, "%s:%s\r\n", n, v)
+	})
+
+	out = fmt.Append(out, "\r\n")
+
+	_, err = w.writer.Write(out)
+	return err
 }

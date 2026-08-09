@@ -7,12 +7,17 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
 )
 
-type Handler func(w response.Writer, req *request.Request)
+type HandlerFunc func(w response.Writer, req *request.Request)
+
+func (f HandlerFunc) ServeHTTP(w response.Writer, r *request.Request) {
+	f(w, r)
+}
 
 type Server struct {
 	handler  Handler
@@ -24,6 +29,10 @@ type HandlerError struct {
 	Message    string
 }
 
+type Handler interface {
+	ServeHTTP(w response.Writer, req *request.Request)
+}
+
 func (h *HandlerError) Write(w response.Writer) {
 	err := w.WriteStatusLine(h.StatusCode)
 	if err != nil {
@@ -31,8 +40,8 @@ func (h *HandlerError) Write(w response.Writer) {
 		return
 	}
 
-	headers := response.GetDefaultHeaders(len(h.Message))
-	err = w.WriteHeaders(headers)
+	w.Header().Replace("content-length", strconv.Itoa(len(h.Message)))
+	err = w.WriteHeaders()
 	if err != nil {
 		log.Fatalf("error writing headers: %v", err)
 		return
@@ -70,7 +79,7 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 		return
 	}
 
-	s.handler(*responseWriter, r)
+	s.handler.ServeHTTP(*responseWriter, r)
 }
 
 func (s *Server) runServer() {

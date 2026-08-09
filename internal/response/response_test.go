@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"httpfromtcp/internal/headers"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"httpfromtcp/internal/headers"
 )
 
 func TestWriteStatusLine200(t *testing.T) {
@@ -61,10 +61,11 @@ func TestWriteHeaders(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
 
-	h := headers.NewHeaders()
-	h.Set("Content-Type", "text/plain")
-	h.Set("Connection", "close")
-	require.NoError(t, w.WriteHeaders(h))
+	w.Header().Delete("connection")
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Connection", "close")
+
+	require.NoError(t, w.WriteHeaders())
 
 	got := parseHeaderBlock(t, buf.String())
 	assert.Equal(t, map[string]string{
@@ -76,12 +77,14 @@ func TestWriteHeaders(t *testing.T) {
 func TestWriteHeadersEmptySet(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	require.NoError(t, w.WriteHeaders(headers.NewHeaders()))
+	w.Header().Delete("connection")
+	require.NoError(t, w.WriteHeaders())
 	assert.Equal(t, "\r\n", buf.String(), "empty header set is just the terminating blank line")
 }
 
 func TestGetDefaultHeadersContentLength(t *testing.T) {
-	h := GetDefaultHeaders(42)
+	h := headers.NewHeaders()
+	h.Set("Content-length", "42")
 	got, ok := h.Get("content-length")
 	require.True(t, ok)
 	assert.Equal(t, "42", got)
@@ -90,10 +93,12 @@ func TestGetDefaultHeadersContentLength(t *testing.T) {
 func TestWriteBody(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
+	assert.False(t, w.HasSentHeader())
+
 	n, err := w.WriteBody([]byte("hello"))
 	require.NoError(t, err)
 	assert.Equal(t, 5, n)
-	assert.Equal(t, "hello", buf.String())
+	assert.Equal(t, "HTTP/1.1 200 OK\r\nconnection:close\r\n\r\nhello", buf.String())
 }
 
 func TestWriteChunkedBody(t *testing.T) {
@@ -143,7 +148,7 @@ func TestWriterErrorPropagation(t *testing.T) {
 	w := NewWriter(errWriter{})
 
 	assert.Error(t, w.WriteStatusLine(StatusOK), "WriteStatusLine")
-	assert.Error(t, w.WriteHeaders(GetDefaultHeaders(0)), "WriteHeaders")
+	assert.Error(t, w.WriteHeaders(), "WriteHeaders")
 
 	_, err := w.WriteBody([]byte("x"))
 	assert.Error(t, err, "WriteBody")
@@ -154,5 +159,7 @@ func TestWriterErrorPropagation(t *testing.T) {
 	_, err = w.WriteChunkedBodyDone()
 	assert.Error(t, err, "WriteChunkedBodyDone")
 
-	assert.Error(t, w.WriteTrailers(GetDefaultHeaders(0)), "WriteTrailers")
+	h := headers.NewHeaders()
+	w.Header().Set("Content-length", "0")
+	assert.Error(t, w.WriteTrailers(h), "WriteTrailers")
 }
