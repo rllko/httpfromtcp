@@ -1,35 +1,10 @@
-/*
-*
-* I NEED THIS
-
-	func main() {
-	    router = chi.NewRouter()
-	    router.Use(middleware.Recoverer)
-	    var err error
-	    db, err = connect()
-	    catch(err)
-	    router.Use(ChangeMethod)
-	    router.Get("/", GetAllArticles)
-	    router.Route("/articles", func(r chi.Router) {
-	        r.Get("/", NewArticle)
-	        r.Post("/", CreateArticle)
-	        r.Route("/{articleID}", func(r chi.Router) {
-	            r.Use(ArticleCtx)
-	            r.Get("/", GetArticle) // GET /articles/1234
-	            r.Put("/", UpdateArticle)    // PUT /articles/1234
-	            r.Delete("/", DeleteArticle) // DELETE /articles/1234
-	            r.Get("/edit", EditArticle) // GET /articles/1234/edit
-	        })
-	    })
-	    err = http.ListenAndServe(":8005", router)
-	    catch(err)
-	}
-*/
+// Package router
 package router
 
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"httpfromtcp/internal/request"
@@ -37,8 +12,7 @@ import (
 	"httpfromtcp/internal/server"
 )
 
-var notFoundEndpoint Handler = func(w response.Writer, req *request.Request) {
-	const NotFoundMessage = `
+const NotFoundMessage = `
 	<html>
 	  <head>
 	    <title>404 Not Found</title>
@@ -49,11 +23,8 @@ var notFoundEndpoint Handler = func(w response.Writer, req *request.Request) {
 	  </body>
 	</html>
 	`
-	w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
-}
 
-var allowEndpoint Handler = func(w response.Writer, req *request.Request) {
-	const AllowedMessage = `
+const AllowedMessage = `
 	<html>
 	  <head>
 	    <title>405 Method Not Allowed</title>
@@ -64,8 +35,6 @@ var allowEndpoint Handler = func(w response.Writer, req *request.Request) {
 	  </body>
 	</html>
 	`
-	w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html")
-}
 
 type Handler func(w response.Writer, req *request.Request)
 
@@ -98,9 +67,11 @@ type node struct {
 }
 
 type Router struct {
-	trees    map[string]*node
-	newIndex func() segmentIndex
-	Errors   []error
+	trees            map[string]*node
+	newIndex         func() segmentIndex
+	Errors           []error
+	notFoundEndpoint Handler
+	allowEndpoint    Handler
 }
 
 func New() *Router {
@@ -331,33 +302,55 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 }
 
 func (r *Router) NotFound(h server.HandlerFunc) {
-	notFoundEndpoint = Handler(h)
+	r.notFoundEndpoint = Handler(h)
 }
 
-func (r *Router) Allow(h server.HandlerFunc) {
-	allowEndpoint = Handler(h)
+func (r *Router) MethodNotAllowed(h server.HandlerFunc) {
+	r.allowEndpoint = Handler(h)
 }
 
 func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			notFoundEndpoint(w, req)
-			return
+	if err == nil {
+		// in this case not found and MethodNotAllowed dont use PathValues
+		// this might create problems in the future, good for now
+		for k, v := range match.Params {
+			req.SetPathValue(k, v)
 		}
 
-		if errors.Is(err, ErrMethodNotAllowed) {
-			allowEndpoint(w, req)
-			return
-		}
-
-		w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
+		match.Handler(w, req)
 		return
 	}
 
-	for k, v := range match.Params {
-		req.SetPathValue(k, v)
+	if errors.Is(err, ErrNotFound) {
+		if r.notFoundEndpoint != nil {
+			r.notFoundEndpoint(w, req)
+			return
+		}
+		w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+		return
 	}
 
-	match.Handler(w, req)
+	if errors.Is(err, ErrMethodNotAllowed) {
+		w.Header().Set("Allow", strings.Join(r.Allowed(req.RequestLine.RequestTarget), ", "))
+		if r.allowEndpoint != nil {
+			r.allowEndpoint(w, req)
+			return
+		}
+
+		err = w.WriteStatusLine(405)
+		if err != nil {
+			w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html")
+			return
+		}
+
+		w.Header().Replace("content-length", strconv.Itoa(len(AllowedMessage)))
+		w.Header().Replace("content-type", "text/html")
+		_ = w.WriteHeaders()
+
+		_, _ = w.WriteBody([]byte(AllowedMessage))
+		return
+	}
+
+	w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
 }

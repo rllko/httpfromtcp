@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
@@ -39,8 +40,8 @@ func (h *HandlerError) Write(w response.Writer) {
 		return
 	}
 
-	headers := response.GetDefaultHeaders(len(h.Message))
-	err = w.WriteHeaders(headers)
+	w.Header().Replace("content-length", strconv.Itoa(len(h.Message)))
+	err = w.WriteHeaders()
 	if err != nil {
 		log.Fatalf("error writing headers: %v", err)
 		return

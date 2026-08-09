@@ -31,8 +31,9 @@ func toStr(bytes []byte) string {
 
 // TODO: not sure if we should put this chunked stuff in the chunked.go
 var chunkedRequest router.Handler = func(w response.Writer, req *request.Request) {
-	h := response.GetDefaultHeaders(0)
 	// Every canned body in this handler is HTML; /video overrides.
+	h := w.Header()
+
 	h.Replace("content-type", "text/html")
 
 	val, ok := req.PathValue("path")
@@ -40,23 +41,26 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 		w.Error("no path", response.StatusNotFound, "text/plain")
 		return
 	}
-	fmt.Printf("PATH: %s\n", val)
 	resp, err := http.Get("https://httpbin.org/" + val)
 	defer resp.Body.Close()
 
 	if err != nil {
-		w.Error(string(""), response.StatusBadRequest, "text/plain")
+		w.Error("", response.StatusBadRequest, "")
 		return
 	}
 
-	w.WriteStatusLine(response.StatusOK)
+	if resp.Body == nil {
+		w.Error("", response.StatusInternalServerError, "")
+	}
+
+	_ = w.WriteStatusLine(response.StatusOK)
 
 	h.Set("transfer-encoding", "chunked")
 	h.Delete("Content-length")
 	h.Replace("content-type", "text/html")
 	h.Set("Trailer", "X-Content-SHA256")
 	h.Set("Trailer", "X-Content-Length")
-	w.WriteHeaders(h)
+	_ = w.WriteHeaders()
 
 	fullBody := []byte{}
 
@@ -67,7 +71,8 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 			break
 		}
 		fullBody = append(fullBody, data[:n]...)
-		w.WriteChunkedBody(data[:n])
+
+		_, _ = w.WriteChunkedBody(data[:n])
 	}
 
 	tailers := headers.NewHeaders()
@@ -77,16 +82,7 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 	tailers.Set("X-Content-Length", fmt.Sprintf("%x", len(fullBody)))
 	// WriteTrailers terminates the chunked stream itself
 	// ("0\r\n" + trailers + "\r\n") — no Done call before it.
-	w.WriteTrailers(tailers)
-}
-
-var videoEndpoint router.Handler = func(w response.Writer, req *request.Request) {
-	video, _ := os.ReadFile("./assets/vim.mp4")
-	w.RespondWithBody(
-		response.StatusOK,
-		"video/mp4",
-		video,
-	)
+	_ = w.WriteTrailers(tailers)
 }
 
 var myProblem router.Handler = func(w response.Writer, req *request.Request) {
@@ -128,11 +124,11 @@ var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) 
   </body>
 </html>`)
 
-	w.RespondWithBody(
-		response.StatusOK,
-		"text/html",
-		body,
-	)
+	w.Header().Set("Content-type", "text/html")
+	_, err := w.WriteBody(body)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 var uploadFile router.Handler = func(w response.Writer, req *request.Request) {
@@ -148,7 +144,6 @@ func main() {
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
-		Get("/video", videoEndpoint).
 		Post("/upload-file", uploadFile).
 		Get("/json/*name", router.Handler(func(w response.Writer, req *request.Request) {
 			val, ok := req.PathValue("name")
@@ -156,7 +151,7 @@ func main() {
 				w.Error("no name", response.StatusBadRequest, "text/plain")
 				return
 			}
-			w.JSON(map[string]any{
+			w.WriteJSON(map[string]any{
 				"name":   val,
 				"peepee": 2,
 			}, response.StatusOK)
@@ -166,11 +161,11 @@ func main() {
 		errJSON := map[string]any{
 			"error": "not found",
 		}
-		w.JSON(errJSON, response.StatusNotFound)
+		w.WriteJSON(errJSON, response.StatusNotFound)
 	})
 
-	r.Allow(func(w response.Writer, req *request.Request) {
-		w.Error("", response.StatusMethodNotAllowed, "")
+	r.MethodNotAllowed(func(w response.Writer, req *request.Request) {
+		_ = w.WriteStatusLine(response.StatusMethodNotAllowed)
 	})
 
 	if err := r.Err(); err != nil {

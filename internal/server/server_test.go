@@ -41,8 +41,8 @@ func (c *fakeConn) Close() error                { c.closed = true; return nil }
 
 func helloHandler(w response.Writer, req *request.Request) {
 	_ = w.WriteStatusLine(response.StatusOK)
-	h := response.GetDefaultHeaders(len("hello"))
-	_ = w.WriteHeaders(h)
+	w.Header().Set("Content-length", "5")
+	_ = w.WriteHeaders()
 	_, _ = w.WriteBody([]byte("hello"))
 }
 
