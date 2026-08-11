@@ -200,11 +200,6 @@ func (w *Writer) WriteBody(body []byte) (int, error) {
 }
 
 func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
-	if w.Response.IsSent() {
-		fmt.Println("already sent")
-		return 0, nil
-	}
-
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -227,22 +222,12 @@ func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
 
 // WriteChunkedBodyDone - RFC 9112 7.1
 func (w *Writer) WriteChunkedBodyDone() (int, error) {
-	if w.Response.IsSent() {
-		fmt.Println("already sent")
-		return 0, nil
-	}
-
 	w.Response.Body = []byte("0\r\n\r\n")
 	n, err := w.writer.Write([]byte("0\r\n\r\n"))
 	return n, err
 }
 
 func (w *Writer) WriteTrailers(h *headers.Headers) error {
-	if w.Response.IsSent() {
-		fmt.Println("already sent")
-		return nil
-	}
-
 	if _, err := w.writer.Write([]byte("0\r\n")); err != nil {
 		return err
 	}
