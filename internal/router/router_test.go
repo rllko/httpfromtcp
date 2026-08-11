@@ -21,7 +21,7 @@ import (
 var lastCalled string
 
 func mark(name string) Handler {
-	return func(w response.Writer, req *request.Request) {
+	return func(w *response.Writer, req *request.Request) {
 		lastCalled = name
 	}
 }
@@ -30,7 +30,7 @@ func called(t *testing.T, m *Match) string {
 	t.Helper()
 	require.NotNil(t, m)
 	lastCalled = ""
-	m.Handler(response.Writer{}, nil)
+	m.Handler(&response.Writer{}, nil)
 	return lastCalled
 }
 

@@ -3,6 +3,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,7 +37,7 @@ const AllowedMessage = `
 	</html>
 	`
 
-type Handler func(w response.Writer, req *request.Request)
+type Handler func(w *response.Writer, req *request.Request)
 
 var (
 	ErrNotFound         = errors.New("no route matches the path")
@@ -73,8 +74,18 @@ type Router struct {
 	notFoundEndpoint         Handler
 	methodNotAllowedEndpoint Handler
 
-	middlewares    []Middleware
-	finalMwHandler Handler
+	middlewares []Middleware
+	built       bool
+}
+
+func (r *Router) Build(w *response.Writer, req *request.Request) {
+	if r.built {
+		fmt.Println("already built")
+		return
+	}
+	ch := r.ApplyMiddlewares(r.routeHTTP)
+	ch(w, req)
+	r.built = true
 }
 
 func New() *Router {
@@ -312,7 +323,7 @@ func (r *Router) MethodNotAllowed(h server.HandlerFunc) {
 	r.methodNotAllowedEndpoint = Handler(h)
 }
 
-func (r *Router) routeHTTP(w response.Writer, req *request.Request) {
+func (r *Router) routeHTTP(w *response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
 	if err == nil {
 		// in this case not found and MethodNotAllowed dont use PathValues
@@ -358,7 +369,6 @@ func (r *Router) routeHTTP(w response.Writer, req *request.Request) {
 	w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
 }
 
-func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
-	ch := r.ApplyMiddlewares(r.routeHTTP)
-	ch(w, req)
+func (r *Router) ServeHTTP(w *response.Writer, req *request.Request) {
+	r.Build(w, req)
 }

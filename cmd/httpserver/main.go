@@ -30,7 +30,7 @@ func toStr(bytes []byte) string {
 }
 
 // TODO: not sure if we should put this chunked stuff in the chunked.go
-var chunkedRequest router.Handler = func(w response.Writer, req *request.Request) {
+var chunkedRequest router.Handler = func(w *response.Writer, req *request.Request) {
 	// Every canned body in this handler is HTML; /video overrides.
 	h := w.Header()
 
@@ -85,7 +85,7 @@ var chunkedRequest router.Handler = func(w response.Writer, req *request.Request
 	_ = w.WriteTrailers(tailers)
 }
 
-var myProblem router.Handler = func(w response.Writer, req *request.Request) {
+var myProblem router.Handler = func(w *response.Writer, req *request.Request) {
 	body := `<html>
   <head>
     <title>500 Internal Server Error</title>
@@ -99,7 +99,7 @@ var myProblem router.Handler = func(w response.Writer, req *request.Request) {
 	w.Error(body, response.StatusInternalServerError, "text/html")
 }
 
-var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
+var yourProblem router.Handler = func(w *response.Writer, req *request.Request) {
 	body := `<html>
   <head>
     <title>400 Bad Request</title>
@@ -113,7 +113,7 @@ var yourProblem router.Handler = func(w response.Writer, req *request.Request) {
 	w.Error(body, response.StatusBadRequest, "text/html")
 }
 
-var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) {
+var rootEndpoint router.Handler = func(w *response.Writer, req *request.Request) {
 	body := []byte(`<html>
   <head>
     <title>200 OK</title>
@@ -131,15 +131,15 @@ var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) 
 	}
 }
 
-var uploadFile router.Handler = func(w response.Writer, req *request.Request) {
+var uploadFile router.Handler = func(w *response.Writer, req *request.Request) {
 	req.Trailers.ForEach(func(n string, v string) {
 		fmt.Printf("%s: %s\n", n, v)
 	})
 }
 
 func MiddlewareTest(next router.Handler) router.Handler {
-	return router.Handler(func(w response.Writer, req *request.Request) {
-		w.Header().Set("penis", "hehe")
+	return router.Handler(func(w *response.Writer, req *request.Request) {
+		w.Header().Set("hehe", "haha")
 
 		next(w, req)
 
@@ -147,15 +147,32 @@ func MiddlewareTest(next router.Handler) router.Handler {
 	})
 }
 
+func PanicHandlerMiddleware(next router.Handler) router.Handler {
+	return router.Handler(func(w *response.Writer, req *request.Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("Recovered in Request ID: %v\n%+v", req.ID, r)
+				w.Error(r.(string), response.StatusInternalServerError, "text/plain")
+			}
+		}()
+
+		next(w, req)
+	})
+}
+
 func main() {
 	r := router.New()
-	r.Use(MiddlewareTest).
+	r.Use(PanicHandlerMiddleware).
+		Use(MiddlewareTest).
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
 		Post("/upload-file", uploadFile).
-		Get("/json/*name", router.Handler(func(w response.Writer, req *request.Request) {
+		Get("/panic", func(w *response.Writer, req *request.Request) {
+			panic("hehe")
+		}).
+		Get("/json/*name", router.Handler(func(w *response.Writer, req *request.Request) {
 			val, ok := req.PathValue("name")
 			if !ok {
 				w.Error("no name", response.StatusBadRequest, "text/plain")
@@ -167,14 +184,14 @@ func main() {
 			}, response.StatusOK)
 		}))
 
-	r.NotFound(func(w response.Writer, req *request.Request) {
+	r.NotFound(func(w *response.Writer, req *request.Request) {
 		errJSON := map[string]any{
 			"error": "not found",
 		}
 		w.WriteJSON(errJSON, response.StatusNotFound)
 	})
 
-	r.MethodNotAllowed(func(w response.Writer, req *request.Request) {
+	r.MethodNotAllowed(func(w *response.Writer, req *request.Request) {
 		_ = w.WriteStatusLine(response.StatusMethodNotAllowed)
 	})
 
