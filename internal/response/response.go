@@ -3,14 +3,13 @@ package response
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 
 	"httpfromtcp/internal/headers"
 )
-
-type Response struct{}
 
 type StatusCode int
 
@@ -30,17 +29,48 @@ type Writer struct {
 	writer     io.Writer
 	header     *headers.Headers
 	sentHeader bool
+	Response   *Response
+}
+
+type Response struct {
+	Writer   *Writer
+	Status   StatusCode
+	Body     []byte
+	Headers  *headers.Headers
+	Trailers *headers.Headers
+	Error    error
+	Sent     bool
+}
+
+func newResponse() *Response {
+	return &Response{
+		Sent: false,
+	}
+}
+
+func (r *Response) IsSent() bool {
+	return r.Sent
+}
+
+func (r *Response) IsError() bool {
+	return r.Error != nil
 }
 
 func NewWriter(w io.Writer) *Writer {
 	h := headers.NewHeaders()
 	h.Set("Connection", "close")
 
-	return &Writer{
+	writer := &Writer{
 		writer:     w,
 		header:     h,
 		sentHeader: false,
+		Response:   newResponse(),
 	}
+
+	writer.Response.Writer = writer
+	writer.Response.Headers = h
+
+	return writer
 }
 
 func (w *Writer) HasSentHeader() bool {
@@ -80,11 +110,18 @@ func (w *Writer) WriteJSON(data map[string]any, code StatusCode) {
 }
 
 func (w *Writer) Error(msg string, code StatusCode, contentType string) {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return
+	}
+
 	_ = w.WriteStatusLine(code)
 
 	if contentType != "" {
 		w.Header().Replace("content-type", contentType)
 	}
+
+	w.Response.Error = errors.New(msg)
 
 	w.Header().Replace("content-length", strconv.Itoa(len(msg)))
 
@@ -113,6 +150,8 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}
+
+	w.Response.Status = status
 	statusLine = fmt.Append(statusLine, "\r\n")
 
 	_, err := w.writer.Write(statusLine)
@@ -120,6 +159,11 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 }
 
 func (w *Writer) WriteHeaders() error {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return nil
+	}
+
 	var err error
 	out := []byte{}
 	w.header.ForEach(func(n string, v string) {
@@ -131,21 +175,36 @@ func (w *Writer) WriteHeaders() error {
 
 	out = fmt.Append(out, "\r\n")
 
+	w.Response.Headers = w.header
+
 	_, err = w.writer.Write(out)
 	w.sentHeader = true
 	return err
 }
 
 func (w *Writer) WriteBody(body []byte) (int, error) {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return 0, nil
+	}
+
 	if !w.sentHeader {
 		_ = w.WriteStatusLine(200)
 		_ = w.WriteHeaders()
 	}
+
+	w.Response.Body = body
 	n, err := w.writer.Write(body)
+	w.Response.Sent = true
 	return n, err
 }
 
 func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return 0, nil
+	}
+
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -155,22 +214,35 @@ func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
 		return 0, err
 	}
 
+	w.Response.Body = p
 	_, err = w.writer.Write(p)
 	if err != nil {
 		return 0, err
 	}
 
 	n, err := w.writer.Write([]byte("\r\n"))
+
 	return n, err
 }
 
 // WriteChunkedBodyDone - RFC 9112 7.1
 func (w *Writer) WriteChunkedBodyDone() (int, error) {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return 0, nil
+	}
+
+	w.Response.Body = []byte("0\r\n\r\n")
 	n, err := w.writer.Write([]byte("0\r\n\r\n"))
 	return n, err
 }
 
 func (w *Writer) WriteTrailers(h *headers.Headers) error {
+	if w.Response.IsSent() {
+		fmt.Println("already sent")
+		return nil
+	}
+
 	if _, err := w.writer.Write([]byte("0\r\n")); err != nil {
 		return err
 	}
@@ -186,6 +258,9 @@ func (w *Writer) WriteTrailers(h *headers.Headers) error {
 
 	out = fmt.Append(out, "\r\n")
 
+	w.Response.Trailers = h
+
 	_, err = w.writer.Write(out)
+	w.Response.Sent = true
 	return err
 }

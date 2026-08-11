@@ -67,11 +67,14 @@ type node struct {
 }
 
 type Router struct {
-	trees            map[string]*node
-	newIndex         func() segmentIndex
-	Errors           []error
-	notFoundEndpoint Handler
-	allowEndpoint    Handler
+	trees                    map[string]*node
+	newIndex                 func() segmentIndex
+	Errors                   []error
+	notFoundEndpoint         Handler
+	methodNotAllowedEndpoint Handler
+
+	middlewares    []Middleware
+	finalMwHandler Handler
 }
 
 func New() *Router {
@@ -306,10 +309,10 @@ func (r *Router) NotFound(h server.HandlerFunc) {
 }
 
 func (r *Router) MethodNotAllowed(h server.HandlerFunc) {
-	r.allowEndpoint = Handler(h)
+	r.methodNotAllowedEndpoint = Handler(h)
 }
 
-func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
+func (r *Router) routeHTTP(w response.Writer, req *request.Request) {
 	match, err := r.Lookup(req.RequestLine.Method, req.RequestLine.RequestTarget)
 	if err == nil {
 		// in this case not found and MethodNotAllowed dont use PathValues
@@ -333,8 +336,8 @@ func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 
 	if errors.Is(err, ErrMethodNotAllowed) {
 		w.Header().Set("Allow", strings.Join(r.Allowed(req.RequestLine.RequestTarget), ", "))
-		if r.allowEndpoint != nil {
-			r.allowEndpoint(w, req)
+		if r.methodNotAllowedEndpoint != nil {
+			r.methodNotAllowedEndpoint(w, req)
 			return
 		}
 
@@ -353,4 +356,9 @@ func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
 	}
 
 	w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
+}
+
+func (r *Router) ServeHTTP(w response.Writer, req *request.Request) {
+	ch := r.ApplyMiddlewares(r.routeHTTP)
+	ch(w, req)
 }

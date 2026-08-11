@@ -132,15 +132,25 @@ var rootEndpoint router.Handler = func(w response.Writer, req *request.Request) 
 }
 
 var uploadFile router.Handler = func(w response.Writer, req *request.Request) {
-	fmt.Printf("OUTPUT: %s\n", req.Body)
 	req.Trailers.ForEach(func(n string, v string) {
 		fmt.Printf("%s: %s\n", n, v)
 	})
 }
 
+func MiddlewareTest(next router.Handler) router.Handler {
+	return router.Handler(func(w response.Writer, req *request.Request) {
+		w.Header().Set("penis", "hehe")
+
+		next(w, req)
+
+		fmt.Printf("%+v\n%s", *w.Response, w.Response.Body)
+	})
+}
+
 func main() {
 	r := router.New()
-	r.Get("/", rootEndpoint).
+	r.Use(MiddlewareTest).
+		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
