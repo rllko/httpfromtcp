@@ -3,7 +3,6 @@ package router
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,18 +73,14 @@ type Router struct {
 	notFoundEndpoint         Handler
 	methodNotAllowedEndpoint Handler
 
-	middlewares []Middleware
-	built       bool
+	middlewares    []Middleware
+	built          bool
+	finalMwHandler Handler
 }
 
-func (r *Router) Build(w *response.Writer, req *request.Request) {
-	if r.built {
-		fmt.Println("already built")
-		return
-	}
-	ch := r.ApplyMiddlewares(r.routeHTTP)
-	ch(w, req)
-	r.built = true
+func (r *Router) Build() *Router {
+	r.finalMwHandler = r.ApplyMiddlewares(r.routeHTTP)
+	return r
 }
 
 func New() *Router {
@@ -316,10 +311,18 @@ func (r *Router) Patch(pattern string, h Handler) *Router {
 }
 
 func (r *Router) NotFound(h server.HandlerFunc) {
+	if r.built {
+		r.Errors = append(r.Errors, errors.New("notfound can only be set before the router is built"))
+	}
+
 	r.notFoundEndpoint = Handler(h)
 }
 
 func (r *Router) MethodNotAllowed(h server.HandlerFunc) {
+	if r.built {
+		r.Errors = append(r.Errors, errors.New("method not allowed can only be set before the router is built"))
+	}
+
 	r.methodNotAllowedEndpoint = Handler(h)
 }
 
@@ -370,5 +373,5 @@ func (r *Router) routeHTTP(w *response.Writer, req *request.Request) {
 }
 
 func (r *Router) ServeHTTP(w *response.Writer, req *request.Request) {
-	r.Build(w, req)
+	r.finalMwHandler(w, req)
 }

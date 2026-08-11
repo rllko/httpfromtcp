@@ -142,8 +142,6 @@ func MiddlewareTest(next router.Handler) router.Handler {
 		w.Header().Set("hehe", "haha")
 
 		next(w, req)
-
-		fmt.Printf("%+v\n%s", *w.Response, w.Response.Body)
 	})
 }
 
@@ -194,6 +192,8 @@ func main() {
 	r.MethodNotAllowed(func(w *response.Writer, req *request.Request) {
 		_ = w.WriteStatusLine(response.StatusMethodNotAllowed)
 	})
+
+	r.Build()
 
 	if err := r.Err(); err != nil {
 		log.Fatalf("Error starting server: %v", err)
