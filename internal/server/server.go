@@ -13,9 +13,9 @@ import (
 	"httpfromtcp/internal/response"
 )
 
-type HandlerFunc func(w response.Writer, req *request.Request)
+type HandlerFunc func(w *response.Writer, req *request.Request)
 
-func (f HandlerFunc) ServeHTTP(w response.Writer, r *request.Request) {
+func (f HandlerFunc) ServeHTTP(w *response.Writer, r *request.Request) {
 	f(w, r)
 }
 
@@ -30,10 +30,10 @@ type HandlerError struct {
 }
 
 type Handler interface {
-	ServeHTTP(w response.Writer, req *request.Request)
+	ServeHTTP(w *response.Writer, req *request.Request)
 }
 
-func (h *HandlerError) Write(w response.Writer) {
+func (h *HandlerError) Write(w *response.Writer) {
 	err := w.WriteStatusLine(h.StatusCode)
 	if err != nil {
 		log.Fatalf("error writing status line: %v", err)
@@ -74,12 +74,12 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 			hErr.Message = err.Error()
 		}
 
-		hErr.Write(*responseWriter)
+		hErr.Write(responseWriter)
 
 		return
 	}
 
-	s.handler.ServeHTTP(*responseWriter, r)
+	s.handler.ServeHTTP(responseWriter, r)
 }
 
 func (s *Server) runServer() {

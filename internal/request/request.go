@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/url"
 )
@@ -26,6 +28,7 @@ type RequestLine struct {
 }
 
 type Request struct {
+	ID             uuid.UUID
 	RequestLine    RequestLine
 	state          parserState
 	Headers        *headers.Headers
@@ -91,6 +94,7 @@ const (
 
 func NewRequest() *Request {
 	return &Request{
+		ID:         uuid.New(),
 		state:      StateInit,
 		Headers:    headers.NewHeaders(),
 		Body:       "",

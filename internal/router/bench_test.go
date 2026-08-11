@@ -13,7 +13,7 @@ import (
 	"httpfromtcp/internal/response"
 )
 
-func noopHandler(w response.Writer, req *request.Request) {}
+func noopHandler(w *response.Writer, req *request.Request) {}
 
 // buildRoutes returns a deterministic mixed route table: static routes,
 // param routes, and the occasional wildcard.

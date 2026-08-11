@@ -24,6 +24,7 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
   - [Chunked transfer encoding](#chunked-transfer-encoding)
   - [Packages](#packages)
   - [Handler interface](#the-servers-handler-interface)
+  - [Middleware](#middleware)
 - [Run the tests](#run-the-tests)
 - [AI usage](#ai-usage)
 - [References](#references)
@@ -46,6 +47,7 @@ The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A requ
 - Buffered response headers with an implicit commit on first body write
 - A polynomial rolling hash for segment comparison, with a benchmark against a map
 - A large test suite with split-read tests and malformed-input tests
+- A middleware chain composed once at startup, wrapping the router's dispatch
 
 ## Getting started
 
@@ -225,7 +227,7 @@ The router obeys these rules:
 Handlers read captured segments with `req.PathValue(name)`. The values are stored on the request, so concurrent requests never share them. The router
 writes them just before it calls the handler.
 
-The router is the server's handler. `Router.ServeHTTP` looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler; on `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
+The router is the server's handler. `Router.ServeHTTP` calls the middleware chain. The last element in the chain is `routeHTTP`. This method looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler. On `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
 
 An application replaces either page with `r.NotFound(h)` and `r.Allow(h)`. Neither chains — a fallback is not a route. When you set neither, the router serves its own HTML pages. The `Allow` header is set by the router before it calls the 405 handler, so a replacement page cannot omit it.
 
@@ -304,6 +306,72 @@ After a successful parse the handler owns the whole response: the status line,
 the headers, and the body. The server writes nothing after `ServeHTTP` returns.
 A second write would put a second response on the same connection. The server
 handles one request for each connection and then closes it.
+
+### Middleware
+
+A middleware takes a handler and returns a handler of the same type:
+
+```go
+type Middleware func(next Handler) Handler
+```
+
+The new handler runs code before it calls `next`. It also runs code after `next`
+returns. The code before `next` can reject a request. The code after `next` can
+examine the response. A middleware that does not call `next` ends the chain. No
+handler below it runs.
+
+`Use` adds a middleware. `Build` makes the chain:
+
+```go
+r := router.New()
+r.Use(recovery).
+	Use(logging).
+	Get("/", rootEndpoint).
+	Build()
+```
+
+The first `Use` wraps all the other middlewares. It reads the request first and
+the response last. `Build` folds the slice in reverse order to keep this order.
+
+The chain wraps the dispatch of the router. The chain does not wrap each
+handler. `ServeHTTP` calls the chain. The last element in the chain is
+`routeHTTP`. This method looks the route up, binds the parameters, and calls the
+matched handler.
+
+The router has two methods for one reason. One method cannot be the entry point
+of the chain and also the last element of the chain. That is infinite recursion.
+
+The chain wraps the dispatch. This has three results:
+
+- A 404 response and a 405 response go through the chain. The lookup occurs in
+  the last element. A request that matches no route runs each middleware first.
+- A middleware applies to all the routes. You cannot apply a middleware to only
+  one route or to only one subtree.
+- A middleware does not know the matched route before it calls `next`. The
+  router binds the parameters below it. After `next` returns, `req.PathValue`
+  gives the values.
+
+The router builds the chain one time, at start. Each connection shares the
+router. Thus you write to the router at setup, and you only read the router
+after that. `Use`, `NotFound`, and `MethodNotAllowed` after `Build` add an error
+to the router. They do not change the chain. Call `Err()` before you listen.
+
+A middleware that catches a panic must register the deferred function before it
+calls `next`. A direct call to `recover` gives nil. A panic in `next` also skips
+the lines after it:
+
+```go
+func Recovery(next router.Handler) router.Handler {
+	return func(w *response.Writer, req *request.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				w.Error(fmt.Sprintf("%v", rec), response.StatusInternalServerError, "text/plain")
+			}
+		}()
+		next(w, req)
+	}
+}
+```
 
 ### Packages
 

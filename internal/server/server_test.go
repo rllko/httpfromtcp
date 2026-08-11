@@ -39,7 +39,7 @@ func (c *fakeConn) Read(p []byte) (int, error)  { return c.in.Read(p) }
 func (c *fakeConn) Write(p []byte) (int, error) { return c.out.Write(p) }
 func (c *fakeConn) Close() error                { c.closed = true; return nil }
 
-func helloHandler(w response.Writer, req *request.Request) {
+func helloHandler(w *response.Writer, req *request.Request) {
 	_ = w.WriteStatusLine(response.StatusOK)
 	w.Header().Set("Content-length", "5")
 	_ = w.WriteHeaders()
