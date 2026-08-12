@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"httpfromtcp/internal/diagnostic"
 	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
@@ -207,7 +208,7 @@ func main() {
 	defer func() {
 		_ = server.Close()
 	}()
-
+	fmt.Println(diagnostic.Underline("/files/*path/edit", 99, 120))
 	log.Println("Server started on port", port)
 
 	sigChan := make(chan os.Signal, 1)
