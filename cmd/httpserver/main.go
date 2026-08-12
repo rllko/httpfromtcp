@@ -208,7 +208,8 @@ func main() {
 	defer func() {
 		_ = server.Close()
 	}()
-	fmt.Println(diagnostic.Underline("/files/*path/edit", 99, 120))
+
+	fmt.Println(diagnostic.Render("wildcard segment must be last", diagnostic.Underline("GET /files/*path/edit", 11, 16)))
 	log.Println("Server started on port", port)
 
 	sigChan := make(chan os.Signal, 1)

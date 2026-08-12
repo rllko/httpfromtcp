@@ -41,3 +41,26 @@ func TestUnderline(t *testing.T) {
 	// i set the edge case to make it len(str) as the end....
 	assert.Equal(t, len(res), strLen+1+strLen)
 }
+
+func TestRender(t *testing.T) {
+	d := Diagnostic{
+		File:    "/files/*path/edit",
+		Line:    7,
+		Message: "invalid path",
+		Source:  "/files/*path/edit",
+		Start:   7,
+		End:     12,
+		Help:    "invalid path",
+	}
+
+	expected := `error: invalid path
+  --> /files/*path/edit:7
+  |
+  | /files/*path/edit
+  |        ^^^^^
+  |
+  = help: invalid path
+`
+	t.Log(expected, d.Render())
+	assert.Equal(t, expected, d.Render())
+}
