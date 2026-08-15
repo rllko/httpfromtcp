@@ -7,6 +7,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -97,6 +98,18 @@ func TestHandleErrRequestMapsStatus(t *testing.T) {
 	s.ActiveConnections.Wait()
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 501 Not Implemented\r\n"),
 		"an ErrRequest must map to its own status code, got:\n%q", out)
+}
+
+func TestHandlerErrorWriteSafeDefaults(t *testing.T) {
+	var buf bytes.Buffer
+	hErr := &HandlerError{StatusCode: response.StatusBadRequest, Message: "bad"}
+	hErr.Write(response.NewWriter(&buf))
+
+	out := buf.String()
+	assert.Contains(t, out, "content-type:text/plain; charset=utf-8\r\n")
+	assert.Contains(t, out, "x-content-type-options:nosniff\r\n")
+	assert.Contains(t, out, "content-length:3\r\n")
+	assert.True(t, strings.HasSuffix(out, "bad"))
 }
 
 func TestHandlePassesParsedRequestToHandler(t *testing.T) {

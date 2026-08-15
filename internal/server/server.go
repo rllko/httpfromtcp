@@ -51,6 +51,8 @@ func (h *HandlerError) Write(w *response.Writer) {
 		return
 	}
 
+	w.Header().Replace("content-type", "text/plain; charset=utf-8")
+	w.Header().Replace("x-content-type-options", "nosniff")
 	w.Header().Replace("content-length", strconv.Itoa(len(h.Message)))
 	err = w.WriteHeaders()
 	if err != nil {

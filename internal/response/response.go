@@ -120,9 +120,11 @@ func (w *Writer) Error(msg string, code StatusCode, contentType string) {
 
 	_ = w.WriteStatusLine(code)
 
-	if contentType != "" {
-		w.Header().Replace("content-type", contentType)
+	if contentType == "" {
+		contentType = "text/plain; charset=utf-8"
 	}
+	w.Header().Replace("content-type", contentType)
+	w.Header().Replace("x-content-type-options", "nosniff")
 
 	w.Response.Error = errors.New(msg)
 
