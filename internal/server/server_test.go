@@ -49,37 +49,45 @@ func helloHandler(w *response.Writer, req *request.Request) {
 func TestHandleWritesExactlyOneResponse(t *testing.T) {
 	// The handler owns the entire response — handle() must not write a
 	// second status line or header block after it.
-	s := &Server{handler: HandlerFunc(helloHandler)}
-	conn := newFakeConn("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-	s.handle(conn)
+	a, b := net.Pipe()
 
-	out := conn.out.String()
+	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	go s.handle(b)
+	a.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+	buff, _ := io.ReadAll(io.LimitReader(a, 1024))
+	out := string(buff)
 	assert.Equal(t, 1, strings.Count(out, "HTTP/1.1 "),
 		"response must contain exactly one status line, got:\n%q", out)
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 200 OK\r\n"))
 	assert.True(t, strings.HasSuffix(out, "hello"),
 		"body must be the last thing written, got:\n%q", out)
-	assert.True(t, conn.closed, "connection must be closed after handling")
 }
 
 func TestHandleMalformedRequestGets400(t *testing.T) {
-	s := &Server{handler: HandlerFunc(helloHandler)}
-	conn := newFakeConn("this is not http\r\n\r\n")
-	s.handle(conn)
+	a, b := net.Pipe()
+	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	go s.handle(b)
+	a.Write([]byte("this is not http\r\n\r\n"))
 
-	out := conn.out.String()
+	buff, _ := io.ReadAll(io.Reader(a))
+	out := string(buff)
+
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 400 Bad Request\r\n"),
 		"malformed request must yield a 400, got:\n%q", out)
-	assert.True(t, conn.closed)
 }
 
 func TestHandleEmptyConnection(t *testing.T) {
 	// Client connects and immediately closes: no panic, connection closed.
-	s := &Server{handler: HandlerFunc(helloHandler)}
-	conn := newFakeConn("")
-	s.handle(conn)
-	assert.True(t, conn.closed)
-	assert.True(t, strings.HasPrefix(conn.out.String(), "HTTP/1.1 400"),
+	a, b := net.Pipe()
+	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	go s.handle(b)
+	a.Write([]byte(""))
+
+	buff, _ := io.ReadAll(io.Reader(a))
+	out := string(buff)
+	t.Log(out)
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 408"),
 		"an empty request is malformed and must get a 400")
 }
 

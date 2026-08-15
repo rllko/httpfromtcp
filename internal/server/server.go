@@ -4,10 +4,11 @@ package server
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"os"
 	"strconv"
+	"time"
 
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
@@ -20,8 +21,10 @@ func (f HandlerFunc) ServeHTTP(w *response.Writer, r *request.Request) {
 }
 
 type Server struct {
-	handler  Handler
-	listener net.Listener
+	handler      Handler
+	listener     net.Listener
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 }
 
 type HandlerError struct {
@@ -36,20 +39,20 @@ type Handler interface {
 func (h *HandlerError) Write(w *response.Writer) {
 	err := w.WriteStatusLine(h.StatusCode)
 	if err != nil {
-		log.Fatalf("error writing status line: %v", err)
+		log.Printf("error writing status line: %v\n", err)
 		return
 	}
 
 	w.Header().Replace("content-length", strconv.Itoa(len(h.Message)))
 	err = w.WriteHeaders()
 	if err != nil {
-		log.Fatalf("error writing headers: %v", err)
+		log.Printf("error writing headers: %v\n", err)
 		return
 	}
 
 	n, err := w.WriteBody([]byte(h.Message))
 	if err != nil || n != len(h.Message) {
-		log.Fatalf("error writing body: %v", err)
+		log.Printf("error writing body: %v\n", err)
 		return
 	}
 }
@@ -58,15 +61,23 @@ func (s *Server) Close() error {
 	return s.listener.Close()
 }
 
-func (s *Server) handle(conn io.ReadWriteCloser) {
+func (s *Server) handle(conn net.Conn) {
+	conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
 	defer conn.Close()
 	responseWriter := response.NewWriter(conn)
 
 	r, err := request.RequestFromReader(conn)
 	if err != nil {
+
 		hErr := &HandlerError{
 			StatusCode: response.StatusBadRequest,
 			Message:    err.Error(),
+		}
+
+		// RFC 9110 §15.5.9
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			hErr.StatusCode = response.StatusRequestTimeout
+			hErr.Message = "Request Timeout"
 		}
 
 		if err, ok := errors.AsType[*request.ErrRequest](err); ok {
@@ -74,11 +85,13 @@ func (s *Server) handle(conn io.ReadWriteCloser) {
 			hErr.Message = err.Error()
 		}
 
+		conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 		hErr.Write(responseWriter)
 
 		return
 	}
 
+	conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 	s.handler.ServeHTTP(responseWriter, r)
 }
 
@@ -100,8 +113,10 @@ func Serve(port uint16, handle Handler) (*Server, error) {
 	}
 
 	server := &Server{
-		handler:  handle,
-		listener: listener,
+		handler:      handle,
+		listener:     listener,
+		ReadTimeout:  time.Second * 10,
+		WriteTimeout: time.Second * 10,
 	}
 
 	go server.runServer()
