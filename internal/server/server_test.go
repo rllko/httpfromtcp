@@ -7,7 +7,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,22 +22,6 @@ import (
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
 )
-
-// fakeConn is an in-memory io.ReadWriteCloser so handle() can be tested
-// without a real socket.
-type fakeConn struct {
-	in     *strings.Reader
-	out    bytes.Buffer
-	closed bool
-}
-
-func newFakeConn(request string) *fakeConn {
-	return &fakeConn{in: strings.NewReader(request)}
-}
-
-func (c *fakeConn) Read(p []byte) (int, error)  { return c.in.Read(p) }
-func (c *fakeConn) Write(p []byte) (int, error) { return c.out.Write(p) }
-func (c *fakeConn) Close() error                { c.closed = true; return nil }
 
 func helloHandler(w *response.Writer, req *request.Request) {
 	_ = w.WriteStatusLine(response.StatusOK)
@@ -102,14 +85,18 @@ func TestHandleEmptyConnection(t *testing.T) {
 }
 
 func TestHandleErrRequestMapsStatus(t *testing.T) {
-	s := &Server{handler: HandlerFunc(helloHandler)}
-	conn := newFakeConn("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
-	s.handle(conn)
+	a, b := net.Pipe()
+	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	s.ActiveConnections.Add(1)
+	go s.handle(b)
+	a.Write([]byte("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n"))
 
-	out := conn.out.String()
+	buff, _ := io.ReadAll(io.Reader(a))
+	out := string(buff)
+
+	s.ActiveConnections.Wait()
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 501 Not Implemented\r\n"),
 		"an ErrRequest must map to its own status code, got:\n%q", out)
-	assert.True(t, conn.closed)
 }
 
 func TestHandlePassesParsedRequestToHandler(t *testing.T) {
@@ -120,10 +107,13 @@ func TestHandlePassesParsedRequestToHandler(t *testing.T) {
 		path = req.URL.Path
 		host, ok = req.Headers.Get("host")
 	}
-	s := &Server{handler: HandlerFunc(h)}
-	conn := newFakeConn("GET /a?b=c HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	s.handle(conn)
+	a, b := net.Pipe()
+	s := &Server{handler: HandlerFunc(h), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	s.ActiveConnections.Add(1)
+	go s.handle(b)
+	a.Write([]byte("GET /a?b=c HTTP/1.1\r\nHost: example.com\r\n\r\n"))
 
+	s.ActiveConnections.Wait()
 	assert.Equal(t, "GET", method)
 	assert.Equal(t, "/a", path)
 	assert.True(t, ok)
