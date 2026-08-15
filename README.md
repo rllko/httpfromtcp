@@ -27,6 +27,11 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
   - [Packages](#packages)
   - [Handler interface](#the-servers-handler-interface)
   - [Middleware](#middleware)
+  - [Timeouts](#timeouts)
+  - [Shutdown](#shutdown)
+  - [Limits](#limits)
+  - [Framing rules](#framing-rules)
+  - [Safe response defaults](#safe-response-defaults)
 - [Run the tests](#run-the-tests)
 - [AI usage](#ai-usage)
 - [References](#references)
@@ -52,6 +57,10 @@ The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A requ
 - A middleware chain composed once at startup, wrapping the router's dispatch
 - Registration errors that keep the method, the pattern, and the position of the fault
 - Error messages with a source line and a `^` marker, in the style of the Rust compiler
+- Read and write deadlines, with a `408` response for a client that is too slow
+- Two methods to stop: an immediate `Close` and a `Shutdown` with a limit of time
+- Eight configurable size limits, with `413`, `414`, and `431` responses
+- Framing rules that reject `Transfer-Encoding` with `Content-Length` (RFC 9112 §6.1)
 
 ## Getting started
 
@@ -439,6 +448,120 @@ func Recovery(next router.Handler) router.Handler {
 	}
 }
 ```
+
+### Timeouts
+
+The server has two timeouts. `Serve` sets each one to 10 seconds.
+
+| Field          | What it limits                                                    |
+| -------------- | ----------------------------------------------------------------- |
+| `ReadTimeout`  | The time from the start of the connection to the end of the request |
+| `WriteTimeout` | The time from the end of the request to the end of the response    |
+
+The server sets the read deadline before it reads the first byte. The parser stops
+when the client is too slow. The server then sends a `408` response. RFC 9110
+§15.5.9 gives this status.
+
+The server sets the write deadline after the parse. Thus a slow upload does not use
+the write budget. But the write budget includes the time in the handler. A handler
+that waits 15 seconds for a different server loses its connection. The `net/http`
+package has the same behaviour with its `WriteTimeout` field.
+
+A value of zero is not "no timeout". The server adds zero to the current time, and
+that deadline is already in the past. A `Server` that you make by hand, without the
+two fields, refuses each request immediately. `Serve` always sets both fields.
+
+The two timeouts limit time. They do not limit memory. The limits below do that.
+
+### Shutdown
+
+The server has two methods to stop. They make different promises.
+
+| Method            | Stops the listener | Cancels the requests | Waits                |
+| ----------------- | ------------------ | -------------------- | -------------------- |
+| `Close()`         | yes                | yes                  | no                   |
+| `Shutdown(ctx)`   | yes                | yes                  | yes, until `ctx` ends |
+
+`Close` stops the server immediately.
+
+`Shutdown` closes the listener first. Thus no new request starts. It then cancels
+the active requests and waits for them. If `ctx` ends first, `Shutdown` closes the
+connections that remain. A blocked read or write then stops with an error, and
+`Shutdown` gives the error from `ctx`.
+
+`Shutdown` also returns when a handler ignores the cancellation. `Shutdown` does not
+stop the handler. It stops the wait.
+
+The server keeps each active connection in a map. `Shutdown` uses this map when it
+must close the connections by force. A `sync.WaitGroup` counts the active requests.
+
+The server attaches a context to the request before it calls the handler. A handler
+that does long work must examine this context.
+
+### Limits
+
+The `Limits` structure holds eight limits. `RequestFromReader` uses the values in
+`DefaultLimits`. `RequestFromReaderWithLimits` accepts different values.
+
+| Field           | Default | What it counts                          |
+| --------------- | ------- | --------------------------------------- |
+| `RequestLine`   | 8 KiB   | The bytes of the request line           |
+| `HeaderBytes`   | 8 KiB   | The bytes of all the header fields      |
+| `HeaderCount`   | 100     | The number of header fields             |
+| `BodyBytes`     | 10 MiB  | The bytes of the body                   |
+| `ChunkSizeLine` | 8 KiB   | The bytes of one chunk size line        |
+| `TrailerBytes`  | 8 KiB   | The bytes of all the trailer fields     |
+| `TrailerCount`  | 50      | The number of trailer fields            |
+| `ReadBuffer`    | 64 KiB  | The largest size of the read buffer     |
+
+A limit of zero removes that limit.
+
+The parser examines a limit before it keeps more bytes. Thus an incomplete request
+cannot use memory without a bound.
+
+| Limit that fails                          | Status |
+| ----------------------------------------- | ------ |
+| Request line                              | `414`  |
+| Header bytes, header count, read buffer   | `431`  |
+| Body, chunk size line, trailers           | `413`  |
+
+Each limit has its own error value: `ErrorRequestLineTooLarge`,
+`ErrorHeadersTooLarge`, `ErrorBodyTooLarge`, `ErrorChunkSizeLineTooLarge`,
+`ErrorTrailersTooLarge`, and `ErrorRequestTooLarge`. Use `errors.Is` to separate a
+limit failure from bad syntax.
+
+### Framing rules
+
+Ambiguous framing lets an attacker put two requests in one message. One server reads
+one request. A different server reads two. This attack is request smuggling. The
+server therefore rejects an ambiguous message before it reads one byte of the body.
+
+| Condition                                                | Status |
+| -------------------------------------------------------- | ------ |
+| `Transfer-Encoding` and `Content-Length` in one request   | `400`  |
+| Two `Content-Length` headers with different values        | `400`  |
+| A `Content-Length` value that is not a sequence of digits | `400`  |
+| `chunked` is not the last coding                          | `400`  |
+| `chunked` occurs two times                                | `400`  |
+| A transfer coding that the server does not know           | `501`  |
+
+RFC 9112 §6.1 gives the rule for the first row.
+
+The server reads one request for each connection. It then closes the connection.
+Keep-alive is a different project.
+
+### Safe response defaults
+
+The server writes `x-content-type-options: nosniff` with each error response. The
+browser then does not guess the type of the content.
+
+Each error response has a `content-type`. The default value is
+`text/plain; charset=utf-8`.
+
+The server does not write a `Server` header. That header gives the name of the
+software to an attacker. It gives nothing to the client.
+
+CORS and CSP are not in this server. They are policies of the application.
 
 ### Packages
 
