@@ -52,11 +52,14 @@ func TestHandleWritesExactlyOneResponse(t *testing.T) {
 	a, b := net.Pipe()
 
 	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	s.ActiveConnections.Add(1)
 	go s.handle(b)
 	a.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
 
 	buff, _ := io.ReadAll(io.LimitReader(a, 1024))
 	out := string(buff)
+
+	s.ActiveConnections.Wait()
 	assert.Equal(t, 1, strings.Count(out, "HTTP/1.1 "),
 		"response must contain exactly one status line, got:\n%q", out)
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 200 OK\r\n"))
@@ -67,11 +70,14 @@ func TestHandleWritesExactlyOneResponse(t *testing.T) {
 func TestHandleMalformedRequestGets400(t *testing.T) {
 	a, b := net.Pipe()
 	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	s.ActiveConnections.Add(1)
 	go s.handle(b)
 	a.Write([]byte("this is not http\r\n\r\n"))
 
 	buff, _ := io.ReadAll(io.Reader(a))
 	out := string(buff)
+
+	s.ActiveConnections.Wait()
 
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 400 Bad Request\r\n"),
 		"malformed request must yield a 400, got:\n%q", out)
@@ -81,11 +87,14 @@ func TestHandleEmptyConnection(t *testing.T) {
 	// Client connects and immediately closes: no panic, connection closed.
 	a, b := net.Pipe()
 	s := &Server{handler: HandlerFunc(helloHandler), ReadTimeout: time.Second, WriteTimeout: time.Second}
+	s.ActiveConnections.Add(1)
 	go s.handle(b)
 	a.Write([]byte(""))
 
 	buff, _ := io.ReadAll(io.Reader(a))
 	out := string(buff)
+
+	s.ActiveConnections.Wait()
 	t.Log(out)
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 408"),
 		"an empty request is malformed and must get a 400")

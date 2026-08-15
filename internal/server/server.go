@@ -2,12 +2,14 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"httpfromtcp/internal/request"
@@ -21,10 +23,11 @@ func (f HandlerFunc) ServeHTTP(w *response.Writer, r *request.Request) {
 }
 
 type Server struct {
-	handler      Handler
-	listener     net.Listener
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	handler           Handler
+	listener          net.Listener
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ActiveConnections sync.WaitGroup
 }
 
 type HandlerError struct {
@@ -63,6 +66,8 @@ func (s *Server) Close() error {
 
 func (s *Server) handle(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+
+	defer s.ActiveConnections.Done()
 	defer conn.Close()
 	responseWriter := response.NewWriter(conn)
 
@@ -102,6 +107,7 @@ func (s *Server) runServer() {
 			return
 		}
 
+		s.ActiveConnections.Add(1)
 		go s.handle(conn)
 	}
 }
@@ -120,5 +126,20 @@ func Serve(port uint16, handle Handler) (*Server, error) {
 	}
 
 	go server.runServer()
+
 	return server, nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.listener.Close()
+	go func() {
+		s.ActiveConnections.Wait()
+		close(s.ShutdownChan)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }

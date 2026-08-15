@@ -167,7 +167,7 @@ func main() {
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
-		Get("/httpbin/*", chunkedRequest).
+		Get("/httpbin/*path", chunkedRequest).
 		Post("/upload-file", uploadFile).
 		Get("/panic", func(w *response.Writer, req *request.Request) {
 			panic("hehe")
