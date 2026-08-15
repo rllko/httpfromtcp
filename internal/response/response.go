@@ -23,6 +23,7 @@ var (
 	StatusLengthRequired      StatusCode = 411
 	StatusNotFound            StatusCode = 404
 	StatusMethodNotAllowed    StatusCode = 405
+	StatusRequestTimeout      StatusCode = 408
 )
 
 type Writer struct {
@@ -147,6 +148,8 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "404 Not Found")
 	case StatusMethodNotAllowed:
 		statusLine = fmt.Append(statusLine, "405 Method Not Allowed")
+	case StatusRequestTimeout:
+		statusLine = fmt.Append(statusLine, "408 Request Timeout")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}

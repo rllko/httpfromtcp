@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"httpfromtcp/internal/diagnostic"
 	"httpfromtcp/internal/headers"
@@ -167,7 +169,7 @@ func main() {
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
-		Get("/httpbin/*", chunkedRequest).
+		Get("/httpbin/*path", chunkedRequest).
 		Post("/upload-file", uploadFile).
 		Get("/panic", func(w *response.Writer, req *request.Request) {
 			panic("hehe")
@@ -221,14 +223,17 @@ func main() {
 		log.Fatalf("Error starting server: %v", err)
 	}
 
-	defer func() {
-		_ = server.Close()
-	}()
-
 	log.Println("Server started on port", port)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
+
+	log.Println("Shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("shutdown timed out, remaining connections force-closed: %v", err)
+	}
 	log.Println("Server gracefully stopped")
 }

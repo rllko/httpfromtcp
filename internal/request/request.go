@@ -3,6 +3,7 @@ package request
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,26 @@ type Request struct {
 	chunkBytesRead   int
 
 	PathValues map[string]string
+
+	// ctx is set by the server right before the handler runs. A request
+	// built by hand (tests, parsing) has none and reads Background.
+	ctx context.Context
+}
+
+// Context returns the request-local context. It is cancelled when the
+// server shuts down (or the handler deadline passes); it is never nil.
+func (r *Request) Context() context.Context {
+	if r.ctx == nil {
+		return context.Background()
+	}
+	return r.ctx
+}
+
+// WithContext attaches a request-local context and returns the same
+// request so the server can chain the call at dispatch time.
+func (r *Request) WithContext(ctx context.Context) *Request {
+	r.ctx = ctx
+	return r
 }
 
 type StatusCode int
