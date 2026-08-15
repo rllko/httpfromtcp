@@ -450,7 +450,7 @@ func (r *Router) routeHTTP(w *response.Writer, req *request.Request) {
 			r.notFoundEndpoint(w, req)
 			return
 		}
-		w.Error(NotFoundMessage, response.StatusNotFound, "text/html")
+		w.Error(NotFoundMessage, response.StatusNotFound, "text/html; charset=utf-8")
 		return
 	}
 
@@ -463,19 +463,20 @@ func (r *Router) routeHTTP(w *response.Writer, req *request.Request) {
 
 		err = w.WriteStatusLine(405)
 		if err != nil {
-			w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html")
+			w.Error(AllowedMessage, response.StatusMethodNotAllowed, "text/html; charset=utf-8")
 			return
 		}
 
+		w.Header().Replace("content-type", "text/html; charset=utf-8")
+		w.Header().Replace("x-content-type-options", "nosniff")
 		w.Header().Replace("content-length", strconv.Itoa(len(AllowedMessage)))
-		w.Header().Replace("content-type", "text/html")
 		_ = w.WriteHeaders()
 
 		_, _ = w.WriteBody([]byte(AllowedMessage))
 		return
 	}
 
-	w.Error(err.Error(), response.StatusInternalServerError, "text/plain")
+	w.Error(err.Error(), response.StatusInternalServerError, "text/plain; charset=utf-8")
 }
 
 func (r *Router) ServeHTTP(w *response.Writer, req *request.Request) {

@@ -16,14 +16,16 @@ type StatusCode int
 const httpVersion = "HTTP/1.1 "
 
 var (
-	StatusOK                  StatusCode = 200
-	StatusBadRequest          StatusCode = 400
-	StatusInternalServerError StatusCode = 500
-	StatusNotImplemented      StatusCode = 501
-	StatusLengthRequired      StatusCode = 411
-	StatusNotFound            StatusCode = 404
-	StatusMethodNotAllowed    StatusCode = 405
-	StatusRequestTimeout      StatusCode = 408
+	StatusOK                    StatusCode = 200
+	StatusBadRequest            StatusCode = 400
+	StatusInternalServerError   StatusCode = 500
+	StatusNotImplemented        StatusCode = 501
+	StatusLengthRequired        StatusCode = 411
+	StatusNotFound              StatusCode = 404
+	StatusMethodNotAllowed      StatusCode = 405
+	StatusRequestTimeout        StatusCode = 408
+	StatusRequestURITooLong     StatusCode = 414
+	StatusRequestFieldsTooLarge StatusCode = 431
 )
 
 type Writer struct {
@@ -118,9 +120,11 @@ func (w *Writer) Error(msg string, code StatusCode, contentType string) {
 
 	_ = w.WriteStatusLine(code)
 
-	if contentType != "" {
-		w.Header().Replace("content-type", contentType)
+	if contentType == "" {
+		contentType = "text/plain; charset=utf-8"
 	}
+	w.Header().Replace("content-type", contentType)
+	w.Header().Replace("x-content-type-options", "nosniff")
 
 	w.Response.Error = errors.New(msg)
 
@@ -150,6 +154,10 @@ func (w *Writer) WriteStatusLine(status StatusCode) error {
 		statusLine = fmt.Append(statusLine, "405 Method Not Allowed")
 	case StatusRequestTimeout:
 		statusLine = fmt.Append(statusLine, "408 Request Timeout")
+	case StatusRequestURITooLong:
+		statusLine = fmt.Append(statusLine, "414 URI Too Long")
+	case StatusRequestFieldsTooLarge:
+		statusLine = fmt.Append(statusLine, "431 Request Header Fields Too Large")
 	default:
 		return fmt.Errorf("unrecognized status code")
 	}

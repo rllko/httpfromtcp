@@ -401,8 +401,11 @@ func TestRouteHTTPDefaultNotFound(t *testing.T) {
 	var buf bytes.Buffer
 	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/nope"))
 
-	assert.True(t, strings.HasPrefix(buf.String(), "HTTP/1.1 404 Not Found\r\n"),
-		"unmatched path must get the default 404, got:\n%q", buf.String())
+	out := buf.String()
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 404 Not Found\r\n"),
+		"unmatched path must get the default 404, got:\n%q", out)
+	assert.Contains(t, out, "content-type:text/html; charset=utf-8\r\n")
+	assert.Contains(t, out, "x-content-type-options:nosniff\r\n")
 }
 
 func TestRouteHTTPCustomNotFound(t *testing.T) {
@@ -431,6 +434,8 @@ func TestRouteHTTPDefaultMethodNotAllowed(t *testing.T) {
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 405 Method Not Allowed\r\n"),
 		"wrong method must get a 405, got:\n%q", out)
 	assert.Contains(t, out, "allow:GET, POST\r\n")
+	assert.Contains(t, out, "content-type:text/html; charset=utf-8\r\n")
+	assert.Contains(t, out, "x-content-type-options:nosniff\r\n")
 }
 
 func TestRouteHTTPCustomMethodNotAllowed(t *testing.T) {

@@ -43,6 +43,20 @@ func TestWriteStatusLineUnknownCode(t *testing.T) {
 	assert.Empty(t, buf.String(), "nothing must be written on error")
 }
 
+func TestWriteStatusLine414(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	require.NoError(t, w.WriteStatusLine(StatusRequestURITooLong))
+	assert.Equal(t, "HTTP/1.1 414 URI Too Long\r\n", buf.String())
+}
+
+func TestWriteStatusLine431(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	require.NoError(t, w.WriteStatusLine(StatusRequestFieldsTooLarge))
+	assert.Equal(t, "HTTP/1.1 431 Request Header Fields Too Large\r\n", buf.String())
+}
+
 // parseHeaderBlock reads "name:value\r\n" lines (format-agnostic about the
 // space after the colon) up to the terminating blank line.
 func parseHeaderBlock(t *testing.T, out string) map[string]string {
@@ -154,15 +168,37 @@ func TestWriteJSON(t *testing.T) {
 func TestError(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	w.Error("boom", StatusBadRequest, "text/plain")
+	w.Error("boom", StatusBadRequest, "text/html")
 
 	out := buf.String()
 	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 400 Bad Request\r\n"))
-	assert.Contains(t, out, "content-type:text/plain\r\n")
+	assert.Contains(t, out, "content-type:text/html\r\n")
+	assert.Contains(t, out, "x-content-type-options:nosniff\r\n")
 	assert.Contains(t, out, "content-length:4\r\n")
 	assert.True(t, strings.HasSuffix(out, "boom"))
 	assert.True(t, w.Response.IsSent())
 	assert.True(t, w.Response.IsError())
+}
+
+func TestErrorDefaultContentType(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.Error("boom", StatusBadRequest, "")
+
+	out := buf.String()
+	assert.Contains(t, out, "content-type:text/plain; charset=utf-8\r\n")
+	assert.Contains(t, out, "x-content-type-options:nosniff\r\n")
+}
+
+func TestWriterOmitsServerHeader(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	_, err := w.WriteBody([]byte("hello"))
+	require.NoError(t, err)
+
+	_, ok := w.Header().Get("server")
+	assert.False(t, ok)
+	assert.NotContains(t, buf.String(), "server:")
 }
 
 func TestErrorAfterBodySentWritesNothing(t *testing.T) {
