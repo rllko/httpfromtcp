@@ -83,6 +83,35 @@ func TestHandleEmptyConnection(t *testing.T) {
 		"an empty request is malformed and must get a 400")
 }
 
+func TestHandleErrRequestMapsStatus(t *testing.T) {
+	s := &Server{handler: HandlerFunc(helloHandler)}
+	conn := newFakeConn("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
+	s.handle(conn)
+
+	out := conn.out.String()
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 501 Not Implemented\r\n"),
+		"an ErrRequest must map to its own status code, got:\n%q", out)
+	assert.True(t, conn.closed)
+}
+
+func TestHandlePassesParsedRequestToHandler(t *testing.T) {
+	var method, path, host string
+	var ok bool
+	h := func(w *response.Writer, req *request.Request) {
+		method = req.RequestLine.Method
+		path = req.URL.Path
+		host, ok = req.Headers.Get("host")
+	}
+	s := &Server{handler: HandlerFunc(h)}
+	conn := newFakeConn("GET /a?b=c HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	s.handle(conn)
+
+	assert.Equal(t, "GET", method)
+	assert.Equal(t, "/a", path)
+	assert.True(t, ok)
+	assert.Equal(t, "example.com", host)
+}
+
 // freePort grabs an ephemeral port from the kernel and releases it so
 // Serve can bind it. (Racy in theory, fine for tests.)
 func freePort(t *testing.T) uint16 {

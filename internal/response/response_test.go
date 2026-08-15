@@ -138,6 +138,65 @@ func TestWriteChunkedBodyDone(t *testing.T) {
 	assert.Equal(t, "0\r\n\r\n", buf.String())
 }
 
+func TestWriteJSON(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.WriteJSON(map[string]any{"name": "x"}, StatusOK)
+
+	out := buf.String()
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 200 OK\r\n"))
+	assert.True(t, strings.HasSuffix(out, `{"name":"x"}`))
+	assert.Contains(t, out, "content-type:application/json\r\n")
+	assert.Contains(t, out, "content-length:12\r\n")
+	assert.Contains(t, out, "connection:close\r\n")
+}
+
+func TestError(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.Error("boom", StatusBadRequest, "text/plain")
+
+	out := buf.String()
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 400 Bad Request\r\n"))
+	assert.Contains(t, out, "content-type:text/plain\r\n")
+	assert.Contains(t, out, "content-length:4\r\n")
+	assert.True(t, strings.HasSuffix(out, "boom"))
+	assert.True(t, w.Response.IsSent())
+	assert.True(t, w.Response.IsError())
+}
+
+func TestErrorAfterBodySentWritesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	_, err := w.WriteBody([]byte("hello"))
+	require.NoError(t, err)
+
+	w.Error("boom", StatusInternalServerError, "text/plain")
+
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, "HTTP/1.1 "))
+	assert.True(t, strings.HasSuffix(out, "hello"))
+}
+
+func TestWriteTrailers(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	h := headers.NewHeaders()
+	h.Set("X-Content-SHA256", "abc")
+	require.NoError(t, w.WriteTrailers(h))
+	assert.Equal(t, "0\r\nx-content-sha256:abc\r\n\r\n", buf.String())
+}
+
+func TestHasSentHeader(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	assert.False(t, w.HasSentHeader())
+
+	_, err := w.WriteBody([]byte("hello"))
+	require.NoError(t, err)
+	assert.True(t, w.HasSentHeader())
+}
+
 type errWriter struct{}
 
 func (errWriter) Write(p []byte) (int, error) {
