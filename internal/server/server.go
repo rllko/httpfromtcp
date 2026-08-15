@@ -28,6 +28,11 @@ type Server struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	ActiveConnections sync.WaitGroup
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
 }
 
 type HandlerError struct {
@@ -60,15 +65,31 @@ func (h *HandlerError) Write(w *response.Writer) {
 	}
 }
 
+// Close stops the server immediately: it stops accepting and cancels
+// active requests. Unlike Shutdown it does not wait for them to finish.
 func (s *Server) Close() error {
+	s.cancel()
 	return s.listener.Close()
 }
 
 func (s *Server) handle(conn net.Conn) {
-	conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
-
 	defer s.ActiveConnections.Done()
 	defer conn.Close()
+
+	s.mu.Lock()
+	if s.conns == nil {
+		s.conns = make(map[net.Conn]struct{})
+	}
+	s.conns[conn] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.conns, conn)
+		s.mu.Unlock()
+	}()
+
+	conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+
 	responseWriter := response.NewWriter(conn)
 
 	r, err := request.RequestFromReader(conn)
@@ -96,8 +117,15 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
+	base := s.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	defer cancel()
+
 	conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
-	s.handler.ServeHTTP(responseWriter, r)
+	s.handler.ServeHTTP(responseWriter, r.WithContext(ctx))
 }
 
 func (s *Server) runServer() {
@@ -118,11 +146,15 @@ func Serve(port uint16, handle Handler) (*Server, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	server := &Server{
 		handler:      handle,
 		listener:     listener,
 		ReadTimeout:  time.Second * 10,
 		WriteTimeout: time.Second * 10,
+		conns:        make(map[net.Conn]struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	go server.runServer()
@@ -130,16 +162,28 @@ func Serve(port uint16, handle Handler) (*Server, error) {
 	return server, nil
 }
 
+// Shutdown stops accepting, cancels active requests, then waits for them
+// to finish. If ctx expires first, the remaining connections are
+// force-closed so blocked I/O can unblock and Shutdown returns.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.listener.Close()
+	s.cancel()
+
+	done := make(chan struct{})
 	go func() {
 		s.ActiveConnections.Wait()
-		close(s.ShutdownChan)
+		close(done)
 	}()
+
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
+	case <-done:
 		return nil
+	case <-ctx.Done():
+		s.mu.Lock()
+		for conn := range s.conns {
+			conn.Close()
+		}
+		s.mu.Unlock()
+		return ctx.Err()
 	}
 }
