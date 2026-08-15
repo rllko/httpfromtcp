@@ -166,11 +166,8 @@ func main() {
 		Use(MiddlewareTest).
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
-		Get("/myproblem", myProblem).
-		Get("//", yourProblem).
 		Get("/yourproblem", yourProblem).
-		Get("/httpbin/*path", chunkedRequest).
-		Get("/httpbin/{asdsa", chunkedRequest).
+		Get("/httpbin/*", chunkedRequest).
 		Post("/upload-file", uploadFile).
 		Get("/panic", func(w *response.Writer, req *request.Request) {
 			panic("hehe")
@@ -202,9 +199,12 @@ func main() {
 
 	for _, err := range r.Err() {
 		if err, ok := errors.AsType[router.RouteError](err); ok {
+
 			diag := diagnostic.Diagnostic{
 				Message: err.Err.Error(),
 				Source:  err.Pattern,
+				File:    err.File,
+				Line:    err.Line,
 				Start:   err.Start,
 				End:     err.End,
 				Help:    err.Help,

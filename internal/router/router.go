@@ -4,6 +4,8 @@ package router
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +54,8 @@ var (
 
 type RouteError struct {
 	Err        error
+	File       string
+	Line       int
 	Method     string
 	Pattern    string
 	Start, End int
@@ -159,10 +163,13 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 	for i, seg := range segs {
 		switch {
 		case seg == "":
+			_, file, line, _ := runtime.Caller(2)
 			// Covers both "//" inside and a trailing slash — patterns
 			// must be canonical.
 			return RouteError{
 				Start:   0,
+				File:    filepath.Base(file),
+				Line:    line,
 				End:     len(pattern),
 				Err:     ErrInvalidPattern,
 				Method:  method,
@@ -171,24 +178,36 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 			}
 
 		case seg[0] == '{':
+			_, file, line, _ := runtime.Caller(2)
+			invalidPattern := RouteError{
+				Start:   offset,
+				File:    filepath.Base(file),
+				Line:    line,
+				End:     offset + len(seg),
+				Err:     ErrInvalidPattern,
+				Method:  method,
+				Pattern: pattern,
+				Help:    "start the variable with '{' and end with '}', i.e {name}",
+			}
+
+			if seg[len(seg)-1] != '}' {
+				return invalidPattern
+			}
+
 			name := seg[1 : len(seg)-1]
-			if len(seg) < 3 || seg[len(seg)-1] != '}' || name == "" {
-				return RouteError{
-					Start:   offset,
-					End:     offset + len(seg),
-					Err:     ErrInvalidPattern,
-					Method:  method,
-					Pattern: pattern,
-					Help:    "start the variable with '{' and end with '}' like {name}",
-				}
+			if name == "" {
+				return invalidPattern
 			}
 
 			if n.paramChild == nil {
 				n.paramChild = r.newNode()
 				n.paramName = name
 			} else if n.paramName != name {
+				_, file, line, _ := runtime.Caller(2)
 				return RouteError{
 					Start:   offset,
+					File:    filepath.Base(file),
+					Line:    line,
 					End:     offset + len(seg),
 					Err:     ErrParamConflict,
 					Method:  method,
@@ -201,9 +220,13 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 		case seg[0] == '*':
 			name := seg[1:]
 			if name == "" {
+				_, file, line, _ := runtime.Caller(2)
+
 				return RouteError{
 					Start:   offset,
 					End:     offset + len(seg),
+					File:    filepath.Base(file),
+					Line:    line,
 					Err:     ErrInvalidPattern,
 					Method:  method,
 					Pattern: pattern,
@@ -211,8 +234,12 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 				}
 			}
 			if i != len(segs)-1 {
+				_, file, line, _ := runtime.Caller(2)
+
 				return RouteError{
 					Start:   offset,
+					File:    filepath.Base(file),
+					Line:    line,
 					End:     offset + len(seg),
 					Err:     ErrWildcardNotLast,
 					Method:  method,
@@ -220,8 +247,12 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 				}
 			}
 			if n.wildcardH != nil {
+				_, file, line, _ := runtime.Caller(2)
+
 				return RouteError{
 					Start:   offset,
+					Line:    line,
+					File:    filepath.Base(file),
 					End:     offset + len(seg),
 					Err:     ErrDuplicateRoute,
 					Method:  method,
@@ -244,8 +275,11 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 	}
 
 	if n.handler != nil {
+		_, file, line, _ := runtime.Caller(2)
 		return RouteError{
 			Start:   0,
+			File:    filepath.Base(file),
+			Line:    line,
 			End:     len(pattern),
 			Err:     ErrDuplicateRoute,
 			Method:  method,
@@ -266,7 +300,8 @@ func lookupNode(n *node, segs []string) (Handler, map[string]string, bool) {
 
 	seg := segs[0]
 
-	if child, found := n.static.get(seg); found {
+	// Patterns and paths match case-sensitively, per RFC 3986
+	if child, found := n.static.get(strings.ToLower(seg)); found {
 		if h, params, matched := lookupNode(child, segs[1:]); matched {
 			return h, params, true
 		}
