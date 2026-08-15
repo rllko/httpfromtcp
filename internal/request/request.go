@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -73,10 +72,15 @@ type StatusCode int
 type ErrRequest struct {
 	Status  StatusCode
 	Message string
+	Err     error
 }
 
 func (e *ErrRequest) Error() string {
 	return e.Message
+}
+
+func (e *ErrRequest) Unwrap() error {
+	return e.Err
 }
 
 var (
@@ -93,7 +97,8 @@ var (
 	// lands, a Transfer-Encoding body must be REFUSED (501), never
 	// silently dropped — dropping it is a smuggling-shaped data loss.
 	ErrorTransferEncodingNotImplemented = errors.New("transfer-encoding not implemented")
-	ErrorInvalidTransferEncoding        = errors.New("invalid Transfer-Encoding")
+	ErrorInvalidTransferEncoding        = errors.New("invalid transfer-encoding")
+	ErrorTEAndContentLength             = errors.New("transfer-encoding with content-length")
 	SEPARATOR                           = []byte("\r\n")
 )
 
@@ -227,9 +232,17 @@ outer:
 				}
 
 				if data, hasTE := r.Headers.Get("transfer-encoding"); hasTE {
-					// transfer encoding overrides content length - rfc 9112 §6.1
-					// i get that both together should generate a 400 but this does the same ig
-					r.Headers.Delete("Content-length")
+					// RFC 9112 §6.1: TE+CL is ambiguous framing (a
+					// smuggling vector) and must be rejected before any
+					// body byte is read.
+					if _, hasCL := r.Headers.Get("content-length"); hasCL {
+						r.state = StateError
+						return 0, &ErrRequest{
+							Status:  400,
+							Message: ErrorTEAndContentLength.Error(),
+							Err:     ErrorTEAndContentLength,
+						}
+					}
 
 					str, exists := r.Headers.Get("Trailer")
 					if exists {
@@ -242,50 +255,51 @@ outer:
 						}
 					}
 
+					// transfer-coding names are case-insensitive (RFC 9110 §5.6.2)
 					params := strings.Split(data, ",")
+					for i := range params {
+						params[i] = strings.ToLower(strings.TrimSpace(params[i]))
+					}
 
 					occurChunked := 0
-
-					for i, param := range params {
-						param := strings.TrimSpace(param)
-						params[i] = param
-						if strings.ToLower(param) == "chunked" {
+					for _, param := range params {
+						if param == "chunked" {
 							occurChunked++
 						}
 					}
 
-					if idx := slices.Index(params, "chunked"); (idx != -1 &&
-						params[len(params)-1] != "chunked") ||
-						occurChunked > 1 {
+					if occurChunked > 1 ||
+						(occurChunked == 1 && params[len(params)-1] != "chunked") {
 						r.state = StateError
 						return 0, &ErrRequest{
 							Status:  400,
 							Message: ErrorInvalidTransferEncoding.Error(),
+							Err:     ErrorInvalidTransferEncoding,
 						}
 					}
 
-					if occurChunked == 1 {
-						r.state = StateChunkSize
-						// i was going to return here, but i can just transition
-						break
+					// only exactly one "chunked" coding is decodable;
+					// anything else fails closed
+					if len(params) != 1 || occurChunked != 1 {
+						r.state = StateError
+						return 0, &ErrRequest{
+							Status:  501,
+							Message: ErrorTransferEncodingNotImplemented.Error(),
+							Err:     ErrorTransferEncodingNotImplemented,
+						}
 					}
 
-					r.state = StateError
-					return 0, &ErrRequest{
-						Status:  501,
-						Message: ErrorTransferEncodingNotImplemented.Error(),
-					}
+					r.state = StateChunkSize
+					break
 				}
 
 				length, err := r.contentLength()
 				if err != nil {
 					r.state = StateError
-					break
+					return 0, err
 				}
 				r.bodyLength = length
 
-				// chunked decoding (M5) not built yet: a chunked body
-				// currently has no Content-Length and falls through to Done.
 				if length > 0 {
 					r.state = StateBody
 				} else {
@@ -309,6 +323,13 @@ outer:
 			if err != nil {
 				r.state = StateError
 				return 0, err
+			}
+
+			// (0, 0, nil) is beginChunk's "no full size line yet". A real
+			// terminal chunk ("0\r\n") always has idx >= 1, so this cannot
+			// collide: wait for more bytes instead of mis-framing.
+			if size == 0 && idx == 0 {
+				break outer
 			}
 
 			read += idx + 2
@@ -362,13 +383,17 @@ outer:
 			}
 		case StateConsumeTrailers:
 			idx := bytes.Index(currentData, []byte("\r\n"))
+			if idx == -1 {
+				break outer
+			}
+
 			if idx == 0 {
 				read += 2
 				r.state = StateDone
 				break
 			}
 
-			before, after, ok := bytes.Cut(currentData, []byte(":"))
+			before, after, ok := bytes.Cut(currentData[:idx], []byte(":"))
 			if !ok {
 				return 0, &ErrRequest{
 					Status:  400,
@@ -378,7 +403,7 @@ outer:
 
 			// checking never hurts, this would be a bug otherwise
 			if _, exist := r.Trailers.Get(string(before)); exist {
-				r.Trailers.Replace(string(before), string(after))
+				r.Trailers.Replace(string(before), strings.TrimSpace(string(after)))
 			}
 
 			if r.trailersLength+idx > maxChunkLine {
