@@ -9,7 +9,7 @@ type Middleware func(next Handler) Handler
 
 func (r *Router) Use(m Middleware) *Router {
 	if r.built {
-		r.Errors = append(r.Errors, errors.New("middlewares can only be added before the router is built"))
+		r.errors = append(r.errors, errors.New("middlewares can only be added before the router is built"))
 	}
 	r.middlewares = append(r.middlewares, m)
 	return r

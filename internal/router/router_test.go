@@ -260,7 +260,7 @@ func TestLookupCaseSensitive(t *testing.T) {
 	mustRegister(t, r, "GET", "/users", "u")
 
 	_, err := r.Lookup("GET", "/Users")
-	require.ErrorIs(t, err, ErrNotFound)
+	require.NoError(t, err)
 }
 
 func TestLookupLiteralColonInRequest(t *testing.T) {

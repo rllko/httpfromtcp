@@ -3,6 +3,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"httpfromtcp/internal/diagnostic"
 	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
@@ -165,7 +167,7 @@ func main() {
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
 		Get("/yourproblem", yourProblem).
-		Get("/httpbin/*path", chunkedRequest).
+		Get("/httpbin/*", chunkedRequest).
 		Post("/upload-file", uploadFile).
 		Get("/panic", func(w *response.Writer, req *request.Request) {
 			panic("hehe")
@@ -195,8 +197,23 @@ func main() {
 
 	r.Build()
 
-	if err := r.Err(); err != nil {
+	for _, err := range r.Err() {
+		if err, ok := errors.AsType[router.RouteError](err); ok {
+
+			diag := diagnostic.Diagnostic{
+				Message: err.Err.Error(),
+				Source:  err.Pattern,
+				File:    err.File,
+				Line:    err.Line,
+				Start:   err.Start,
+				End:     err.End,
+				Help:    err.Help,
+			}
+			fmt.Println(diag.Render())
+			continue
+		}
 		log.Fatalf("Error starting server: %v", err)
+
 	}
 
 	server, err := server.Serve(port, r)

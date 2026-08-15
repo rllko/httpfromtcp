@@ -21,6 +21,8 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
   - [The parser state machine](#the-parser-state-machine)
   - [The parser](#the-parser)
   - [The router](#the-router)
+	- [Route errors](#route-errors)
+	- [Error messages](#error-messages)
   - [Chunked transfer encoding](#chunked-transfer-encoding)
   - [Packages](#packages)
   - [Handler interface](#the-servers-handler-interface)
@@ -48,6 +50,8 @@ The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A requ
 - A polynomial rolling hash for segment comparison, with a benchmark against a map
 - A large test suite with split-read tests and malformed-input tests
 - A middleware chain composed once at startup, wrapping the router's dispatch
+- Registration errors that keep the method, the pattern, and the position of the fault
+- Error messages with a source line and a `^` marker, in the style of the Rust compiler
 
 ## Getting started
 
@@ -107,9 +111,13 @@ func main() {
 		w.WriteJSON(map[string]any{"id": id}, response.StatusOK)
 	})
 
-	// registration errors are collected, not returned. Check them before you listen.
-	if err := r.Err(); err != nil {
-		log.Fatal(err)
+
+	// the router collects the registration errors. Examine them before you listen.
+	if errs := r.Err(); len(errs) > 0 {
+		for _, err := range errs {
+			log.Println(err)
+		}
+		log.Fatal("the route table has errors")
 	}
 
 	srv, err := server.Serve(8080, r)
@@ -229,7 +237,7 @@ writes them just before it calls the handler.
 
 The router is the server's handler. `Router.ServeHTTP` calls the middleware chain. The last element in the chain is `routeHTTP`. This method looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler. On `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
 
-An application replaces either page with `r.NotFound(h)` and `r.Allow(h)`. Neither chains — a fallback is not a route. When you set neither, the router serves its own HTML pages. The `Allow` header is set by the router before it calls the 405 handler, so a replacement page cannot omit it.
+An application replaces either page with `r.NotFound(h)` and `r.MethodNotAllowed(h)`. Neither chains — a fallback is not a route. When you set neither, the router serves its own HTML pages. The `Allow` header is set by the router before it calls the 405 handler, so a replacement page cannot omit it.
 
 `Get`, `Post`, `Put`, `Patch`, and `Delete` return the router so calls chain.
 They do not return an error. Registration errors collect in the router; call
@@ -239,8 +247,67 @@ The router also obeys these fixed decisions:
 - `/a` and `/a/` are different paths. The router does not remove slashes.
 - A param does not match an empty segment.
 - A wildcard needs the slash: `/files/*path` matches `/files/` but not `/files`.
+- Letter case is not important in a static segment. A param value and a wildcard value keep their letter case.
 
 The router is a trie. Each node in the trie is one path segment. Two index types can hold the static segments of a node: a Go map (`New`) or a table that uses a polynomial rolling hash (`NewHashed`). When two hashes are equal, the table compares the full strings. This step prevents errors from hash collisions.
+
+### Route errors
+
+`Register` gives an error of the type `RouteError` when a pattern is not correct.
+The error keeps six values: the sentinel error, the method, the pattern, the start
+offset, the end offset, and a help text.
+
+The two offsets are byte positions in the pattern. `Register` calculates them while
+it walks the segments. It does not search the pattern a second time. A pattern that
+repeats a segment gets the correct position.
+
+`RouteError` has an `Unwrap` method. Thus `errors.Is` finds the sentinel through the
+wrapper, and the code that examines the sentinels does not change:
+
+```go
+err := r.Register("GET", "/files/*path/edit", h)
+errors.Is(err, router.ErrWildcardNotLast) // true
+```
+
+`Error` gives one line of text. Use this line in a log file. The `diagnostic`
+package makes the large block. See the next section.
+
+`Err` gives all the errors that the router collected. Use `errors.AsType` to
+separate a `RouteError` from a different error.
+
+### Error messages
+
+The `internal/diagnostic` package writes an error message in the style of the Rust
+compiler:
+
+```
+error: wildcard segment must be last
+  --> main.go:170
+  |
+  | /httpbin/*path/edit
+  |          ^^^^^
+  |
+  = help: wildcard segments must be the final segment
+```
+
+A `Diagnostic` value holds the message, the source line, the two offsets, the file
+name, the line number, and the help text. The `Render` method makes the block.
+
+The `^` characters show the part of the pattern that has the fault. The package
+calculates their position from the two offsets. The gutter has the same width on
+each line. Thus the `^` characters stay below the correct characters.
+
+The `Underline` function limits the two offsets to the length of the source line.
+A negative offset, an offset after the end of the line, and an end offset before the
+start offset are all safe. The function does not stop the program.
+
+The file name and the line number show the position of the call to `Get`, `Post`,
+`Put`, `Patch`, or `Delete`. The router finds them with `runtime.Caller`. The line
+number is available. The column number is not available, because only the Go
+compiler reads the source text.
+
+The `-->` line and the `= help:` line are optional. `Render` omits a line when its
+value is empty.
 
 ### Chunked transfer encoding
 
@@ -384,6 +451,7 @@ func Recovery(next router.Handler) router.Handler {
 | `internal/router`   | The trie router and the rolling hash                    |
 | `internal/server`   | The TCP listener and the handler interface              |
 | `cmd/httpserver`    | An example server                                       |
+| `internal/diagnostic` | The error blocks with a source line and a `^` marker  |
 
 ## Run the tests
 
