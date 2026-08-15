@@ -44,6 +44,10 @@ type Request struct {
 	currentChunkSize int
 	chunkBytesRead   int
 
+	limits       Limits
+	headerBytes  int
+	trailerCount int
+
 	PathValues map[string]string
 
 	// ctx is set by the server right before the handler runs. A request
@@ -95,19 +99,41 @@ var (
 	ErrorInvalidContentLength   = errors.New("invalid Content-Length")
 	// ErrorTransferEncodingNotImplemented: until the M5 chunked decoder
 	// lands, a Transfer-Encoding body must be REFUSED (501), never
-	// silently dropped — dropping it is a smuggling-shaped data loss.
 	ErrorTransferEncodingNotImplemented = errors.New("transfer-encoding not implemented")
 	ErrorInvalidTransferEncoding        = errors.New("invalid transfer-encoding")
 	ErrorTEAndContentLength             = errors.New("transfer-encoding with content-length")
-	SEPARATOR                           = []byte("\r\n")
+	ErrorRequestLineTooLarge   = errors.New("request line too large")
+	ErrorHeadersTooLarge       = errors.New("headers too large")
+	ErrorBodyTooLarge          = errors.New("body too large")
+	ErrorChunkSizeLineTooLarge = errors.New("chunk size line too large")
+	ErrorTrailersTooLarge      = errors.New("trailers too large")
+	ErrorRequestTooLarge       = errors.New("request too large")
+	SEPARATOR                  = []byte("\r\n")
 )
+
+type Limits struct {
+	RequestLine   int
+	HeaderBytes   int
+	HeaderCount   int
+	BodyBytes     int
+	ChunkSizeLine int
+	TrailerBytes  int
+	TrailerCount  int
+	ReadBuffer    int
+}
+
+var DefaultLimits = Limits{
+	RequestLine:   8 << 10,
+	HeaderBytes:   8 << 10,
+	HeaderCount:   100,
+	BodyBytes:     10 << 20,
+	ChunkSizeLine: 8 << 10,
+	TrailerBytes:  8 << 10,
+	TrailerCount:  50,
+	ReadBuffer:    64 << 10,
+}
 
 type parserState string
-
-const (
-	maxChunkLine = 8 << 10  // 8192
-	maxBodySize  = 10 << 20 // 10485760
-)
 
 const (
 	StateInit                parserState = "init"
@@ -127,6 +153,7 @@ func NewRequest() *Request {
 		URL:        &url.URL{},
 		Trailers:   *headers.NewHeaders(),
 		PathValues: map[string]string{},
+		limits:     DefaultLimits,
 	}
 }
 
@@ -197,8 +224,28 @@ outer:
 				return 0, err
 			}
 
+			// no separator yet: the line is still growing, so bound it
+			// while it arrives (slow-loris shape), not only once complete
 			if n == 0 {
+				if l := r.limits.RequestLine; l > 0 && len(currentData) > l {
+					r.state = StateError
+					return 0, &ErrRequest{
+						Status:  414,
+						Message: ErrorRequestLineTooLarge.Error(),
+						Err:     ErrorRequestLineTooLarge,
+					}
+				}
 				break outer
+			}
+
+			// n counts the line plus its CRLF
+			if l := r.limits.RequestLine; l > 0 && n-2 > l {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  414,
+					Message: ErrorRequestLineTooLarge.Error(),
+					Err:     ErrorRequestLineTooLarge,
+				}
 			}
 
 			u, err := url.Parse([]byte(rl.RequestTarget))
@@ -223,6 +270,23 @@ outer:
 			}
 
 			read += n
+			r.headerBytes += n
+			if l := r.limits.HeaderBytes; l > 0 && r.headerBytes > l {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  431,
+					Message: ErrorHeadersTooLarge.Error(),
+					Err:     ErrorHeadersTooLarge,
+				}
+			}
+			if l := r.limits.HeaderCount; l > 0 && r.Headers.Count() > l {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  431,
+					Message: ErrorHeadersTooLarge.Error(),
+					Err:     ErrorHeadersTooLarge,
+				}
+			}
 			// todo: change this
 			// in the real world you dont get EOF, you would just transition to body
 			if done {
@@ -247,7 +311,7 @@ outer:
 					str, exists := r.Headers.Get("Trailer")
 					if exists {
 						for idx, t := range strings.Split(str, ",") {
-							if idx > 50 {
+							if l := r.limits.TrailerCount; l > 0 && idx >= l {
 								break
 							}
 
@@ -298,6 +362,16 @@ outer:
 					r.state = StateError
 					return 0, err
 				}
+
+				// reject at the boundary, before any body byte is retained
+				if l := r.limits.BodyBytes; l > 0 && length > l {
+					r.state = StateError
+					return 0, &ErrRequest{
+						Status:  413,
+						Message: ErrorBodyTooLarge.Error(),
+						Err:     ErrorBodyTooLarge,
+					}
+				}
 				r.bodyLength = length
 
 				if length > 0 {
@@ -319,7 +393,7 @@ outer:
 			}
 		case StateChunkSize:
 
-			size, idx, err := beginChunk(currentData)
+			size, idx, err := beginChunk(currentData, r.limits.BodyBytes)
 			if err != nil {
 				r.state = StateError
 				return 0, err
@@ -330,6 +404,15 @@ outer:
 			// collide: wait for more bytes instead of mis-framing.
 			if size == 0 && idx == 0 {
 				break outer
+			}
+
+			if l := r.limits.ChunkSizeLine; l > 0 && idx > l {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  413,
+					Message: ErrorChunkSizeLineTooLarge.Error(),
+					Err:     ErrorChunkSizeLineTooLarge,
+				}
 			}
 
 			read += idx + 2
@@ -346,10 +429,12 @@ outer:
 			available := len(currentData)
 			toRead := min(needed, available)
 
-			if len(r.Body)+toRead > maxBodySize {
+			if l := r.limits.BodyBytes; l > 0 && len(r.Body)+toRead > l {
+				r.state = StateError
 				return 0, &ErrRequest{
 					Status:  413,
-					Message: "Body too Large",
+					Message: ErrorBodyTooLarge.Error(),
+					Err:     ErrorBodyTooLarge,
 				}
 			}
 
@@ -406,16 +491,30 @@ outer:
 				r.Trailers.Replace(string(before), strings.TrimSpace(string(after)))
 			}
 
-			if r.trailersLength+idx > maxChunkLine {
+			r.trailerCount++
+			if l := r.limits.TrailerCount; l > 0 && r.trailerCount > l {
+				r.state = StateError
 				return 0, &ErrRequest{
-					Status: 413,
+					Status:  413,
+					Message: ErrorTrailersTooLarge.Error(),
+					Err:     ErrorTrailersTooLarge,
+				}
+			}
+
+			if l := r.limits.TrailerBytes; l > 0 && r.trailersLength+idx > l {
+				r.state = StateError
+				return 0, &ErrRequest{
+					Status:  413,
+					Message: ErrorTrailersTooLarge.Error(),
+					Err:     ErrorTrailersTooLarge,
 				}
 			}
 
 			r.trailersLength += idx + 2
 			read += idx + 2
 
-			r.state = StateChunkCRLF
+			// trailer-section grammar is *( field-line ) CRLF: stay here
+			// for the next field, the empty line above ends the section
 		case StateDone:
 			break outer
 
@@ -467,14 +566,26 @@ func (r *Request) done() bool {
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	request := NewRequest()
+	return RequestFromReaderWithLimits(reader, DefaultLimits)
+}
 
-	// note: buffer could overrun, a buffer that exceeds 1k would do that
-	// or the body
+func RequestFromReaderWithLimits(reader io.Reader, limits Limits) (*Request, error) {
+	request := NewRequest()
+	request.limits = limits
+
 	buf := make([]byte, 1024)
 	bufLen := 0
 	for !request.done() {
 		if bufLen == len(buf) {
+			// backstop: nothing should reach this while a real limit is
+			// configured, but the doubling must never go unbounded
+			if maxBuf := limits.ReadBuffer; maxBuf > 0 && len(buf) >= maxBuf {
+				return nil, &ErrRequest{
+					Status:  431,
+					Message: ErrorRequestTooLarge.Error(),
+					Err:     ErrorRequestTooLarge,
+				}
+			}
 			newBuf := make([]byte, len(buf)*2)
 			copy(newBuf, buf[:bufLen])
 			buf = newBuf

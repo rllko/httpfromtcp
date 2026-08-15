@@ -6,8 +6,6 @@ import (
 	"strconv"
 )
 
-const maxLineLength = 8 * 1024 * 1024
-
 var (
 	StateChunkSize       parserState = "StateChunkSize"
 	StateChunkData       parserState = "StateChunkData"
@@ -15,7 +13,7 @@ var (
 	StateConsumeTrailers parserState = "StateConsumeTrailers"
 )
 
-func beginChunk(currentData []byte) (int, int, error) {
+func beginChunk(currentData []byte, maxBody int) (int, int, error) {
 	idx := bytes.Index(currentData, []byte("\r\n"))
 	if idx == -1 {
 		// incomplete line, wait for more
@@ -25,10 +23,11 @@ func beginChunk(currentData []byte) (int, int, error) {
 
 	size, err := strconv.ParseUint(rawSize, 16, 64)
 
-	if size > maxLineLength {
+	if maxBody > 0 && size > uint64(maxBody) {
 		return 0, 0, &ErrRequest{
 			Status:  413,
-			Message: "line too long",
+			Message: ErrorBodyTooLarge.Error(),
+			Err:     ErrorBodyTooLarge,
 		}
 	}
 
