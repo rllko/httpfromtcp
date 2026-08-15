@@ -8,6 +8,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -187,4 +188,122 @@ func TestConcurrentConnections(t *testing.T) {
 		got++
 	}
 	assert.Equal(t, clients, got)
+}
+
+func TestHandlerObservesCancellation(t *testing.T) {
+	a, b := net.Pipe()
+	baseCtx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	s := &Server{
+		handler: HandlerFunc(func(w *response.Writer, req *request.Request) {
+			close(started)
+			<-req.Context().Done()
+		}),
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+		ctx:          baseCtx,
+		cancel:       cancel,
+	}
+	s.ActiveConnections.Add(1)
+	go s.handle(b)
+	a.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	cancel()
+
+	drained := make(chan struct{})
+	go func() {
+		s.ActiveConnections.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not observe cancellation")
+	}
+}
+
+func TestShutdownReturnsWhenHandlerIgnoresCancellation(t *testing.T) {
+	a, b := net.Pipe()
+	baseCtx, cancel := context.WithCancel(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	started := make(chan struct{})
+	s := &Server{
+		handler: HandlerFunc(func(w *response.Writer, req *request.Request) {
+			close(started)
+			time.Sleep(300 * time.Millisecond) // ignores cancellation on purpose
+		}),
+		listener:     listener,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+		ctx:          baseCtx,
+		cancel:       cancel,
+	}
+	s.ActiveConnections.Add(1)
+	go s.handle(b)
+	a.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	ctx, cancelShutdown := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelShutdown()
+
+	begin := time.Now()
+	err = s.Shutdown(ctx)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(begin), 300*time.Millisecond,
+		"Shutdown must return at its deadline, not wait for the handler")
+
+	drained := make(chan struct{})
+	go func() {
+		s.ActiveConnections.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection goroutine leaked after forced shutdown")
+	}
+}
+
+func TestShutdownForceClosesStuckConnection(t *testing.T) {
+	a, b := net.Pipe()
+	baseCtx, cancel := context.WithCancel(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	s := &Server{
+		handler:      HandlerFunc(helloHandler),
+		listener:     listener,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Hour, // the deadline must NOT be what saves us here
+		ctx:          baseCtx,
+		cancel:       cancel,
+	}
+	s.ActiveConnections.Add(1)
+	go s.handle(b)
+	a.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+	ctx, cancelShutdown := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelShutdown()
+	assert.ErrorIs(t, s.Shutdown(ctx), context.DeadlineExceeded)
+
+	drained := make(chan struct{})
+	go func() {
+		s.ActiveConnections.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler stuck on the write was not released by the force-close")
+	}
 }
