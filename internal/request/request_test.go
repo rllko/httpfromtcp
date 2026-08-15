@@ -471,3 +471,19 @@ func TestValidIPv6HostHeader(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 }
+
+func TestPathValues(t *testing.T) {
+	r := NewRequest()
+	r.SetPathValue("id", "42")
+	val, ok := r.PathValue("id")
+	require.True(t, ok)
+	assert.Equal(t, "42", val)
+
+	r.SetPathValue("path", "a/b/c")
+	val, ok = r.PathValue("path")
+	require.True(t, ok)
+	assert.Equal(t, "a/b/c", val)
+
+	_, ok = r.PathValue("nope")
+	assert.False(t, ok)
+}

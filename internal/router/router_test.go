@@ -8,6 +8,8 @@
 package router
 
 import (
+	"bytes"
+	"strings"
 	"sync"
 	"testing"
 
@@ -334,4 +336,398 @@ func TestConcurrentLookups(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// --- dispatch (routeHTTP/ServeHTTP) ---
+
+func newReq(method, target string) *request.Request {
+	req := request.NewRequest()
+	req.RequestLine = request.RequestLine{
+		Method:        method,
+		RequestTarget: target,
+		HTTPVersion:   "1.1",
+	}
+	return req
+}
+
+func TestRouteHTTPSetsPathValues(t *testing.T) {
+	r := New()
+	var val string
+	var ok bool
+	r.Get("/users/{id}", func(w *response.Writer, req *request.Request) {
+		val, ok = req.PathValue("id")
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/users/42"))
+
+	assert.True(t, ok)
+	assert.Equal(t, "42", val)
+}
+
+func TestRouteHTTPSetsWildcardPathValue(t *testing.T) {
+	r := New()
+	var val string
+	var ok bool
+	r.Get("/files/*path", func(w *response.Writer, req *request.Request) {
+		val, ok = req.PathValue("path")
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/files/a/b/c.txt"))
+
+	assert.True(t, ok)
+	assert.Equal(t, "a/b/c.txt", val)
+}
+
+func TestRouteHTTPRouteWithoutParams(t *testing.T) {
+	r := New()
+	mustRegister(t, r, "GET", "/a", "a")
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/a"))
+
+	assert.Equal(t, "a", lastCalled)
+}
+
+func TestRouteHTTPDefaultNotFound(t *testing.T) {
+	r := New()
+	r.Get("/a", mark("a"))
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/nope"))
+
+	assert.True(t, strings.HasPrefix(buf.String(), "HTTP/1.1 404 Not Found\r\n"),
+		"unmatched path must get the default 404, got:\n%q", buf.String())
+}
+
+func TestRouteHTTPCustomNotFound(t *testing.T) {
+	r := New()
+	r.Get("/a", mark("a"))
+	var called bool
+	r.NotFound(func(w *response.Writer, req *request.Request) { called = true })
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/nope"))
+
+	assert.True(t, called, "custom NotFound endpoint must run")
+}
+
+func TestRouteHTTPDefaultMethodNotAllowed(t *testing.T) {
+	r := New()
+	r.Get("/a", mark("a"))
+	r.Post("/a", mark("p"))
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("DELETE", "/a"))
+
+	out := buf.String()
+	assert.True(t, strings.HasPrefix(out, "HTTP/1.1 405 Method Not Allowed\r\n"),
+		"wrong method must get a 405, got:\n%q", out)
+	assert.Contains(t, out, "allow:GET, POST\r\n")
+}
+
+func TestRouteHTTPCustomMethodNotAllowed(t *testing.T) {
+	r := New()
+	r.Get("/a", mark("a"))
+	var called bool
+	r.MethodNotAllowed(func(w *response.Writer, req *request.Request) { called = true })
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("DELETE", "/a"))
+
+	assert.True(t, called, "custom MethodNotAllowed endpoint must run")
+}
+
+// --- middleware ---
+
+func TestMiddlewareOrder(t *testing.T) {
+	var order []string
+	first := func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			order = append(order, "first")
+			next(w, req)
+		}
+	}
+	second := func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			order = append(order, "second")
+			next(w, req)
+		}
+	}
+
+	r := New()
+	r.Use(first).Use(second)
+	r.Get("/", func(w *response.Writer, req *request.Request) {
+		order = append(order, "handler")
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/"))
+
+	assert.Equal(t, []string{"first", "second", "handler"}, order)
+}
+
+func TestMiddlewareShortCircuits(t *testing.T) {
+	reject := func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			w.Error("nope", response.StatusBadRequest, "text/plain")
+		}
+	}
+
+	r := New()
+	r.Use(reject)
+	r.Get("/", mark("handler"))
+	r.Build()
+
+	var buf bytes.Buffer
+	lastCalled = ""
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/"))
+
+	assert.Equal(t, "", lastCalled, "route handler must not run after a rejection")
+	assert.True(t, strings.HasPrefix(buf.String(), "HTTP/1.1 400 Bad Request\r\n"))
+}
+
+func TestMiddlewareAddsResponseHeader(t *testing.T) {
+	add := func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			w.Header().Set("X-Trace", "mw")
+			next(w, req)
+		}
+	}
+
+	r := New()
+	r.Use(add)
+	r.Get("/", func(w *response.Writer, req *request.Request) {
+		_, _ = w.WriteBody([]byte("ok"))
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/"))
+
+	assert.Contains(t, buf.String(), "x-trace:mw\r\n")
+}
+
+func TestMiddlewareDoubleWriteGuard(t *testing.T) {
+	guard := func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			next(w, req)
+			w.Error("late", response.StatusInternalServerError, "text/plain")
+		}
+	}
+
+	r := New()
+	r.Use(guard)
+	r.Get("/", func(w *response.Writer, req *request.Request) {
+		_, _ = w.WriteBody([]byte("hello"))
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/"))
+
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, "HTTP/1.1 "),
+		"a response after the handler ran must not produce a second status line, got:\n%q", out)
+	assert.True(t, strings.HasSuffix(out, "hello"))
+}
+
+func TestUseAfterBuildRecordsError(t *testing.T) {
+	r := New()
+	r.Get("/a", mark("a"))
+	r.Build()
+
+	r.Use(func(next Handler) Handler { return next })
+
+	assert.NotEmpty(t, r.Err())
+}
+
+func TestNotFoundAfterBuildRecordsError(t *testing.T) {
+	r := New()
+	r.Build()
+
+	r.NotFound(func(w *response.Writer, req *request.Request) {})
+
+	assert.NotEmpty(t, r.Err())
+}
+
+func TestMethodNotAllowedAfterBuildRecordsError(t *testing.T) {
+	r := New()
+	r.Build()
+
+	r.MethodNotAllowed(func(w *response.Writer, req *request.Request) {})
+
+	assert.NotEmpty(t, r.Err())
+}
+
+func TestApplyMiddlewaresWrapsHandler(t *testing.T) {
+	var order []string
+	r := New()
+	r.Use(func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			order = append(order, "mw")
+			next(w, req)
+		}
+	})
+
+	h := r.ApplyMiddlewares(func(w *response.Writer, req *request.Request) {
+		order = append(order, "inner")
+	})
+	h(&response.Writer{}, nil)
+
+	assert.Equal(t, []string{"mw", "inner"}, order)
+}
+
+func TestMiddlewareRunsAroundNotFound(t *testing.T) {
+	var mwRan, nfRan bool
+	r := New()
+	r.Use(func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			mwRan = true
+			next(w, req)
+		}
+	})
+	r.Get("/a", mark("a"))
+	r.NotFound(func(w *response.Writer, req *request.Request) { nfRan = true })
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/nope"))
+
+	assert.True(t, mwRan)
+	assert.True(t, nfRan)
+}
+
+func TestMiddlewareRunsAroundMethodNotAllowed(t *testing.T) {
+	var mwRan, mnaRan bool
+	r := New()
+	r.Use(func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			mwRan = true
+			next(w, req)
+		}
+	})
+	r.Get("/a", mark("a"))
+	r.MethodNotAllowed(func(w *response.Writer, req *request.Request) { mnaRan = true })
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("DELETE", "/a"))
+
+	assert.True(t, mwRan)
+	assert.True(t, mnaRan)
+}
+
+func TestMiddlewareRunsBeforePathValues(t *testing.T) {
+	var mwSawParam, handlerSawParam bool
+	r := New()
+	r.Use(func(next Handler) Handler {
+		return func(w *response.Writer, req *request.Request) {
+			_, mwSawParam = req.PathValue("id")
+			next(w, req)
+		}
+	})
+	r.Get("/users/{id}", func(w *response.Writer, req *request.Request) {
+		_, handlerSawParam = req.PathValue("id")
+	})
+	r.Build()
+
+	var buf bytes.Buffer
+	r.ServeHTTP(response.NewWriter(&buf), newReq("GET", "/users/42"))
+
+	assert.False(t, mwSawParam)
+	assert.True(t, handlerSawParam)
+}
+
+func TestRouteErrorMessage(t *testing.T) {
+	err := RouteError{
+		Err:     ErrWildcardNotLast,
+		Method:  "GET",
+		Pattern: "/files/*path/edit",
+	}
+	assert.Equal(t, "router: GET /files/*path/edit: wildcard segment must be last", err.Error())
+}
+
+func TestRouteErrorUnwrap(t *testing.T) {
+	err := RouteError{
+		Err:     ErrDuplicateRoute,
+		Method:  "GET",
+		Pattern: "/a",
+	}
+	assert.ErrorIs(t, err, ErrDuplicateRoute)
+}
+
+func TestRegisterWildcardNotLastPositions(t *testing.T) {
+	r := New()
+	err := r.Register("GET", "/files/*path/edit", mark("h"))
+	require.ErrorIs(t, err, ErrWildcardNotLast)
+
+	var re RouteError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, "GET", re.Method)
+	assert.Equal(t, "/files/*path/edit", re.Pattern)
+	assert.Equal(t, 7, re.Start)
+	assert.Equal(t, 12, re.End)
+	assert.NotEmpty(t, re.File)
+	assert.True(t, re.Line > 0)
+}
+
+func TestRegisterNamelessParamPositions(t *testing.T) {
+	r := New()
+	err := r.Register("GET", "/a/{}", mark("h"))
+	require.ErrorIs(t, err, ErrInvalidPattern)
+
+	var re RouteError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, 3, re.Start)
+	assert.Equal(t, 5, re.End)
+	assert.NotEmpty(t, re.Help)
+}
+
+func TestRegisterTrailingSlashRouteError(t *testing.T) {
+	r := New()
+	err := r.Register("GET", "/a/", mark("h"))
+	require.ErrorIs(t, err, ErrInvalidPattern)
+
+	var re RouteError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, 0, re.Start)
+	assert.Equal(t, len("/a/"), re.End)
+	assert.NotEmpty(t, re.Help)
+}
+
+func TestLookupInvalidPathReturnsRouteError(t *testing.T) {
+	r := New()
+	mustRegister(t, r, "GET", "/a", "a")
+
+	_, err := r.Lookup("GET", "no-slash")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	var re RouteError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, "GET", re.Method)
+	assert.Equal(t, "no-slash", re.Pattern)
+}
+
+func TestGetHelperRecordsRouteErrorInErr(t *testing.T) {
+	r := New()
+	r.Get("/a//b", mark("h"))
+
+	errs := r.Err()
+	require.Len(t, errs, 1)
+	require.ErrorIs(t, errs[0], ErrInvalidPattern)
+
+	var re RouteError
+	require.ErrorAs(t, errs[0], &re)
+	assert.Equal(t, "GET", re.Method)
+	assert.Equal(t, "/a//b", re.Pattern)
 }
