@@ -44,23 +44,22 @@ func TestUnderline(t *testing.T) {
 
 func TestRender(t *testing.T) {
 	d := Diagnostic{
-		File:    "/files/*path/edit",
-		Line:    7,
-		Message: "invalid path",
+		File:    "routes.go",
+		Line:    43,
+		Message: "wildcard segment must be last",
 		Source:  "/files/*path/edit",
 		Start:   7,
 		End:     12,
 		Help:    "invalid path",
 	}
 
-	expected := `error: invalid path
-  --> /files/*path/edit:7
+	expected := `error: wildcard segment must be last
+  --> routes.go:43
   |
   | /files/*path/edit
   |        ^^^^^
   |
   = help: invalid path
 `
-	t.Log(expected, d.Render())
 	assert.Equal(t, expected, d.Render())
 }

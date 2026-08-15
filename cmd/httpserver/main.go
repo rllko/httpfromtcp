@@ -3,6 +3,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -165,8 +166,11 @@ func main() {
 		Use(MiddlewareTest).
 		Get("/", rootEndpoint).
 		Get("/myproblem", myProblem).
+		Get("/myproblem", myProblem).
+		Get("//", yourProblem).
 		Get("/yourproblem", yourProblem).
 		Get("/httpbin/*path", chunkedRequest).
+		Get("/httpbin/{asdsa", chunkedRequest).
 		Post("/upload-file", uploadFile).
 		Get("/panic", func(w *response.Writer, req *request.Request) {
 			panic("hehe")
@@ -196,8 +200,20 @@ func main() {
 
 	r.Build()
 
-	if err := r.Err(); err != nil {
+	for _, err := range r.Err() {
+		if err, ok := errors.AsType[router.RouteError](err); ok {
+			diag := diagnostic.Diagnostic{
+				Message: err.Err.Error(),
+				Source:  err.Pattern,
+				Start:   err.Start,
+				End:     err.End,
+				Help:    err.Help,
+			}
+			fmt.Println(diag.Render())
+			continue
+		}
 		log.Fatalf("Error starting server: %v", err)
+
 	}
 
 	server, err := server.Serve(port, r)
@@ -209,7 +225,6 @@ func main() {
 		_ = server.Close()
 	}()
 
-	fmt.Println(diagnostic.Render("wildcard segment must be last", diagnostic.Underline("GET /files/*path/edit", 11, 16)))
 	log.Println("Server started on port", port)
 
 	sigChan := make(chan os.Signal, 1)

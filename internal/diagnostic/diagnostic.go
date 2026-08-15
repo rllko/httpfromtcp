@@ -54,9 +54,9 @@ func (d Diagnostic) Render() string {
 		fmt.Fprintf(&b, "  | %s\n", part)
 	}
 
-	fmt.Fprintf(&b, "  |\n")
-
 	if d.Help != "" {
+		fmt.Fprintf(&b, "  |\n")
+
 		fmt.Fprintf(&b, "  = help: %s\n", d.Help)
 	}
 

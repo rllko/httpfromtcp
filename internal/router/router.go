@@ -3,6 +3,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,22 @@ var (
 	ErrWildcardNotLast = errors.New("wildcard segment must be last")
 )
 
+type RouteError struct {
+	Err        error
+	Method     string
+	Pattern    string
+	Start, End int
+	Help       string
+}
+
+func (d RouteError) Error() string {
+	return fmt.Sprintf("router: %s %s: %s", d.Method, d.Pattern, d.Err)
+}
+
+func (d RouteError) Unwrap() error {
+	return d.Err
+}
+
 type Match struct {
 	Handler Handler
 	Params  map[string]string
@@ -69,7 +86,7 @@ type node struct {
 type Router struct {
 	trees                    map[string]*node
 	newIndex                 func() segmentIndex
-	Errors                   []error
+	errors                   []error
 	notFoundEndpoint         Handler
 	methodNotAllowedEndpoint Handler
 
@@ -87,7 +104,7 @@ func New() *Router {
 	return &Router{
 		trees:    map[string]*node{},
 		newIndex: func() segmentIndex { return mapIndex{} },
-		Errors:   []error{},
+		errors:   []error{},
 	}
 }
 
@@ -95,7 +112,7 @@ func NewHashed() *Router {
 	return &Router{
 		trees:    map[string]*node{},
 		newIndex: func() segmentIndex { return &hashIndex{} },
-		Errors:   []error{},
+		errors:   []error{},
 	}
 }
 
@@ -104,8 +121,8 @@ func (r *Router) newNode() *node {
 }
 
 // Err returns whether errors were encountered
-func (r *Router) Err() error {
-	return errors.Join(r.Errors...)
+func (r *Router) Err() []error {
+	return r.errors
 }
 
 func splitPath(p string) ([]string, bool) {
@@ -129,46 +146,87 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 	}
 
 	root := r.trees[method]
+
 	if root == nil {
 		root = r.newNode()
 		r.trees[method] = root
 	}
 
+	// ok so, we need to count the amount of segments
+	// to show in the error message
+	offset := 1
 	n := root
 	for i, seg := range segs {
 		switch {
 		case seg == "":
 			// Covers both "//" inside and a trailing slash — patterns
 			// must be canonical.
-			return ErrInvalidPattern
+			return RouteError{
+				Start:   0,
+				End:     len(pattern),
+				Err:     ErrInvalidPattern,
+				Method:  method,
+				Pattern: pattern,
+				Help:    "patterns must be canonical, i.e. /a/b/c",
+			}
 
 		case seg[0] == '{':
-			if len(seg) < 3 || seg[len(seg)-1] != '}' {
-				return ErrInvalidPattern
-			}
 			name := seg[1 : len(seg)-1]
-			if name == "" {
-				return ErrInvalidPattern
+			if len(seg) < 3 || seg[len(seg)-1] != '}' || name == "" {
+				return RouteError{
+					Start:   offset,
+					End:     offset + len(seg),
+					Err:     ErrInvalidPattern,
+					Method:  method,
+					Pattern: pattern,
+					Help:    "start the variable with '{' and end with '}' like {name}",
+				}
 			}
 
 			if n.paramChild == nil {
 				n.paramChild = r.newNode()
 				n.paramName = name
 			} else if n.paramName != name {
-				return ErrParamConflict
+				return RouteError{
+					Start:   offset,
+					End:     offset + len(seg),
+					Err:     ErrParamConflict,
+					Method:  method,
+					Pattern: pattern,
+				}
 			}
+
 			n = n.paramChild
 
 		case seg[0] == '*':
 			name := seg[1:]
 			if name == "" {
-				return ErrInvalidPattern
+				return RouteError{
+					Start:   offset,
+					End:     offset + len(seg),
+					Err:     ErrInvalidPattern,
+					Method:  method,
+					Pattern: pattern,
+					Help:    "the variable needs content after the asterisk, i.e *name",
+				}
 			}
 			if i != len(segs)-1 {
-				return ErrWildcardNotLast
+				return RouteError{
+					Start:   offset,
+					End:     offset + len(seg),
+					Err:     ErrWildcardNotLast,
+					Method:  method,
+					Pattern: pattern,
+				}
 			}
 			if n.wildcardH != nil {
-				return ErrDuplicateRoute
+				return RouteError{
+					Start:   offset,
+					End:     offset + len(seg),
+					Err:     ErrDuplicateRoute,
+					Method:  method,
+					Pattern: pattern,
+				}
 			}
 			n.wildcardName = name
 			n.wildcardH = h
@@ -182,10 +240,17 @@ func (r *Router) Register(method, pattern string, h Handler) error {
 			}
 			n = child
 		}
+		offset += (len(seg) + 1)
 	}
 
 	if n.handler != nil {
-		return ErrDuplicateRoute
+		return RouteError{
+			Start:   0,
+			End:     len(pattern),
+			Err:     ErrDuplicateRoute,
+			Method:  method,
+			Pattern: pattern,
+		}
 	}
 	n.handler = h
 	return nil
@@ -229,7 +294,13 @@ func lookupNode(n *node, segs []string) (Handler, map[string]string, bool) {
 func (r *Router) Lookup(method, path string) (*Match, error) {
 	segs, ok := splitPath(path)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, RouteError{
+			Start:   0,
+			End:     0,
+			Err:     ErrNotFound,
+			Method:  method,
+			Pattern: path,
+		}
 	}
 
 	if root := r.trees[method]; root != nil {
@@ -269,7 +340,7 @@ func (r *Router) Allowed(path string) []string {
 func (r *Router) Get(pattern string, h Handler) *Router {
 	err := r.Register("GET", strings.ToLower(pattern), h)
 	if err != nil {
-		r.Errors = append(r.Errors, err)
+		r.errors = append(r.errors, err)
 	}
 
 	return r
@@ -278,7 +349,7 @@ func (r *Router) Get(pattern string, h Handler) *Router {
 func (r *Router) Post(pattern string, h Handler) *Router {
 	err := r.Register("POST", strings.ToLower(pattern), h)
 	if err != nil {
-		r.Errors = append(r.Errors, err)
+		r.errors = append(r.errors, err)
 	}
 
 	return r
@@ -287,7 +358,7 @@ func (r *Router) Post(pattern string, h Handler) *Router {
 func (r *Router) Delete(pattern string, h Handler) *Router {
 	err := r.Register("DELETE", strings.ToLower(pattern), h)
 	if err != nil {
-		r.Errors = append(r.Errors, err)
+		r.errors = append(r.errors, err)
 	}
 
 	return r
@@ -296,7 +367,7 @@ func (r *Router) Delete(pattern string, h Handler) *Router {
 func (r *Router) Put(pattern string, h Handler) *Router {
 	err := r.Register("PUT", strings.ToLower(pattern), h)
 	if err != nil {
-		r.Errors = append(r.Errors, err)
+		r.errors = append(r.errors, err)
 	}
 
 	return r
@@ -305,14 +376,14 @@ func (r *Router) Put(pattern string, h Handler) *Router {
 func (r *Router) Patch(pattern string, h Handler) *Router {
 	err := r.Register("PATCH", strings.ToLower(pattern), h)
 	if err != nil {
-		r.Errors = append(r.Errors, err)
+		r.errors = append(r.errors, err)
 	}
 	return r
 }
 
 func (r *Router) NotFound(h server.HandlerFunc) {
 	if r.built {
-		r.Errors = append(r.Errors, errors.New("notfound can only be set before the router is built"))
+		r.errors = append(r.errors, errors.New("notfound can only be set before the router is built"))
 	}
 
 	r.notFoundEndpoint = Handler(h)
@@ -320,7 +391,7 @@ func (r *Router) NotFound(h server.HandlerFunc) {
 
 func (r *Router) MethodNotAllowed(h server.HandlerFunc) {
 	if r.built {
-		r.Errors = append(r.Errors, errors.New("method not allowed can only be set before the router is built"))
+		r.errors = append(r.errors, errors.New("method not allowed can only be set before the router is built"))
 	}
 
 	r.methodNotAllowedEndpoint = Handler(h)
