@@ -43,6 +43,20 @@ func TestWriteStatusLineUnknownCode(t *testing.T) {
 	assert.Empty(t, buf.String(), "nothing must be written on error")
 }
 
+func TestWriteStatusLine414(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	require.NoError(t, w.WriteStatusLine(StatusRequestURITooLong))
+	assert.Equal(t, "HTTP/1.1 414 URI Too Long\r\n", buf.String())
+}
+
+func TestWriteStatusLine431(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	require.NoError(t, w.WriteStatusLine(StatusRequestFieldsTooLarge))
+	assert.Equal(t, "HTTP/1.1 431 Request Header Fields Too Large\r\n", buf.String())
+}
+
 // parseHeaderBlock reads "name:value\r\n" lines (format-agnostic about the
 // space after the colon) up to the terminating blank line.
 func parseHeaderBlock(t *testing.T, out string) map[string]string {

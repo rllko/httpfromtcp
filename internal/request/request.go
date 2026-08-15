@@ -102,13 +102,13 @@ var (
 	ErrorTransferEncodingNotImplemented = errors.New("transfer-encoding not implemented")
 	ErrorInvalidTransferEncoding        = errors.New("invalid transfer-encoding")
 	ErrorTEAndContentLength             = errors.New("transfer-encoding with content-length")
-	ErrorRequestLineTooLarge   = errors.New("request line too large")
-	ErrorHeadersTooLarge       = errors.New("headers too large")
-	ErrorBodyTooLarge          = errors.New("body too large")
-	ErrorChunkSizeLineTooLarge = errors.New("chunk size line too large")
-	ErrorTrailersTooLarge      = errors.New("trailers too large")
-	ErrorRequestTooLarge       = errors.New("request too large")
-	SEPARATOR                  = []byte("\r\n")
+	ErrorRequestLineTooLarge            = errors.New("request line too large")
+	ErrorHeadersTooLarge                = errors.New("headers too large")
+	ErrorBodyTooLarge                   = errors.New("body too large")
+	ErrorChunkSizeLineTooLarge          = errors.New("chunk size line too large")
+	ErrorTrailersTooLarge               = errors.New("trailers too large")
+	ErrorRequestTooLarge                = errors.New("request too large")
+	SEPARATOR                           = []byte("\r\n")
 )
 
 type Limits struct {
@@ -315,7 +315,7 @@ outer:
 								break
 							}
 
-							r.Trailers.Set(t, "")
+							r.Trailers.Set(strings.TrimSpace(t), "")
 						}
 					}
 

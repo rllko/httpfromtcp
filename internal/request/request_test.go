@@ -487,3 +487,145 @@ func TestPathValues(t *testing.T) {
 	_, ok = r.PathValue("nope")
 	assert.False(t, ok)
 }
+
+func assertLimit(t *testing.T, err error, sentinel error, status StatusCode) {
+	t.Helper()
+	require.ErrorIs(t, err, sentinel)
+	var reqErr *ErrRequest
+	require.ErrorAs(t, err, &reqErr)
+	assert.Equal(t, status, reqErr.Status)
+}
+
+func TestRequestLineLimit(t *testing.T) {
+	limits := Limits{RequestLine: 32}
+	line := "GET /" + strings.Repeat("a", 18) + " HTTP/1.1"
+	require.Len(t, line, 32)
+
+	r, err := RequestFromReaderWithLimits(strings.NewReader(line+"\r\nHost: x\r\n\r\n"), limits)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+
+	over := "GET /" + strings.Repeat("a", 19) + " HTTP/1.1"
+	require.Len(t, over, 33)
+	_, err = RequestFromReaderWithLimits(strings.NewReader(over+"\r\nHost: x\r\n\r\n"), limits)
+	assertLimit(t, err, ErrorRequestLineTooLarge, 414)
+}
+
+func TestRequestLineLimitIncomplete(t *testing.T) {
+	limits := Limits{RequestLine: 32}
+	_, err := RequestFromReaderWithLimits(strings.NewReader("GET /"+strings.Repeat("a", 40)), limits)
+	assertLimit(t, err, ErrorRequestLineTooLarge, 414)
+}
+
+func TestHeaderBytesLimit(t *testing.T) {
+	limits := Limits{HeaderBytes: 64}
+	section := "Host: x\r\nX-Pad: " + strings.Repeat("a", 44) + "\r\n\r\n"
+	require.Len(t, section, 64)
+
+	r, err := RequestFromReaderWithLimits(strings.NewReader("GET / HTTP/1.1\r\n"+section), limits)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+
+	over := "Host: x\r\nX-Pad: " + strings.Repeat("a", 45) + "\r\n\r\n"
+	_, err = RequestFromReaderWithLimits(strings.NewReader("GET / HTTP/1.1\r\n"+over), limits)
+	assertLimit(t, err, ErrorHeadersTooLarge, 431)
+}
+
+func TestHeaderCountLimit(t *testing.T) {
+	limits := Limits{HeaderCount: 3}
+
+	r, err := RequestFromReaderWithLimits(strings.NewReader("GET / HTTP/1.1\r\nHost: x\r\nA: 1\r\nB: 2\r\n\r\n"), limits)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+
+	_, err = RequestFromReaderWithLimits(strings.NewReader("GET / HTTP/1.1\r\nHost: x\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n"), limits)
+	assertLimit(t, err, ErrorHeadersTooLarge, 431)
+}
+
+func TestBodyBytesLimit(t *testing.T) {
+	limits := Limits{BodyBytes: 8}
+
+	r, err := RequestFromReaderWithLimits(strings.NewReader("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n12345678"), limits)
+	require.NoError(t, err)
+	assert.Equal(t, "12345678", r.Body)
+
+	_, err = RequestFromReaderWithLimits(strings.NewReader("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 9\r\n\r\n123456789"), limits)
+	assertLimit(t, err, ErrorBodyTooLarge, 413)
+}
+
+func TestChunkSizeLineLimit(t *testing.T) {
+	limits := Limits{ChunkSizeLine: 8}
+	atLimit := "5;" + strings.Repeat("a", 6)
+	require.Len(t, atLimit, 8)
+
+	data := "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		atLimit + "\r\nhello\r\n0\r\n\r\n"
+	r, err := RequestFromReaderWithLimits(strings.NewReader(data), limits)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", r.Body)
+
+	over := "5;" + strings.Repeat("a", 7)
+	data = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		over + "\r\nhello\r\n0\r\n\r\n"
+	_, err = RequestFromReaderWithLimits(strings.NewReader(data), limits)
+	assertLimit(t, err, ErrorChunkSizeLineTooLarge, 413)
+}
+
+func TestChunkSizeExceedsBodyLimit(t *testing.T) {
+	limits := Limits{BodyBytes: 4}
+	data := "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+	_, err := RequestFromReaderWithLimits(strings.NewReader(data), limits)
+	assertLimit(t, err, ErrorBodyTooLarge, 413)
+}
+
+func TestChunkedBodyTotalLimit(t *testing.T) {
+	limits := Limits{BodyBytes: 8}
+	data := "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		"5\r\nhello\r\n4\r\n wor\r\n0\r\n\r\n"
+	_, err := RequestFromReaderWithLimits(strings.NewReader(data), limits)
+	assertLimit(t, err, ErrorBodyTooLarge, 413)
+}
+
+func TestTrailerBytesLimit(t *testing.T) {
+	limits := Limits{TrailerBytes: 32}
+	base := "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTrailer: X-A\r\n\r\n3\r\nabc\r\n0\r\n"
+
+	atLimit := "X-A: " + strings.Repeat("a", 27)
+	require.Len(t, atLimit, 32)
+	r, err := RequestFromReaderWithLimits(strings.NewReader(base+atLimit+"\r\n\r\n"), limits)
+	require.NoError(t, err)
+	val, ok := r.Trailers.Get("x-a")
+	require.True(t, ok)
+	assert.Equal(t, strings.Repeat("a", 27), val)
+
+	over := "X-A: " + strings.Repeat("a", 28)
+	_, err = RequestFromReaderWithLimits(strings.NewReader(base+over+"\r\n\r\n"), limits)
+	assertLimit(t, err, ErrorTrailersTooLarge, 413)
+}
+
+func TestTrailerCountLimit(t *testing.T) {
+	limits := Limits{TrailerCount: 2}
+	base := "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTrailer: X-A, X-B, X-C\r\n\r\n3\r\nabc\r\n0\r\n"
+
+	r, err := RequestFromReaderWithLimits(strings.NewReader(base+"X-A: 1\r\nX-B: 2\r\n\r\n"), limits)
+	require.NoError(t, err)
+	val, ok := r.Trailers.Get("x-b")
+	require.True(t, ok)
+	assert.Equal(t, "2", val)
+
+	_, err = RequestFromReaderWithLimits(strings.NewReader(base+"X-A: 1\r\nX-B: 2\r\nX-C: 3\r\n\r\n"), limits)
+	assertLimit(t, err, ErrorTrailersTooLarge, 413)
+}
+
+func TestReadBufferCap(t *testing.T) {
+	limits := Limits{ReadBuffer: 2048}
+
+	r, err := RequestFromReaderWithLimits(
+		strings.NewReader("GET / HTTP/1.1\r\nHost: x\r\nX-Big: "+strings.Repeat("a", 1500)+"\r\n\r\n"), limits)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+
+	_, err = RequestFromReaderWithLimits(
+		strings.NewReader("GET / HTTP/1.1\r\nHost: x\r\nX-Big: "+strings.Repeat("a", 4096)), limits)
+	assertLimit(t, err, ErrorRequestTooLarge, 431)
+}
