@@ -32,7 +32,7 @@ This project was built from scratch as a deep dive into network protocol impleme
 
 ```bash
 # Clone and build
-git clone [https://github.com/rllko/httpfromtcp.git](https://github.com/rllko/httpfromtcp.git)
+git clone https://github.com/rllko/httpfromtcp.git
 cd httpfromtcp
 go build ./...
 
