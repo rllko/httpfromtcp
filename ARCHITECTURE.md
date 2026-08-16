@@ -1,19 +1,20 @@
 # Architecture & Internals
 
-In this document we discuss the architecture and internals of the `httpfromtcp` server, including the request flow, state machine parsing, and trie routing.
+This document discusses the architecture and internals of the `httpfromtcp` server in a way thats not
+cluttering the original README.me file. It includes the request flow, state machine parsing, and trie routing.
 
 ## Package Structure
 
-| Package              | Description                                              |
-| -------------------- | -------------------------------------------------------- |
-| `internal/request`   | The request parser and its resumable state machine.      |
-| `internal/headers`   | Header map, quoted-string parsing, and parameters.       |
-| `internal/url`       | Percent decoding, path/query split, host checking.       |
-| `internal/response`  | The bufferd response writer and chunked encoding.        |
-| `internal/router`    | The trie router, rolling hash, and diagnostics errors.   |
-| `internal/server`    | TCP listener, timeout handling, and handler interface.   |
-| `internal/diagnostics| Errors formatting with source lines and `^` annotations.|  
-| `cmd/httpserver`     | Example server executable showing how to use this code. |
+| Package               | Description                                              |
+| --------------------  | -------------------------------------------------------- |
+| `internal/request`    | Request parser and is state machine.                 |
+| `internal/headers`    | Header map, quoted-string parsing, and parameters.       |
+| `internal/url`        | Percent decoding, path/query split, host checking.       |
+| `internal/response`   | The bufferd response writer and chunked encoding.        |
+| `internal/router`     | The trie router, rolling hash, and diagnostics errors.   |
+| `internal/server`     | TCP listener, timeout handling, and handler interface.   |
+| `internal/diagnostics`| Errors formatting with source lines and `^` annotations.|  
+| `cmd/httpserver`      | Example server executable showing how to use this code. |
 
 ## The Request Flow
 
