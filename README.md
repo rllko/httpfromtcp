@@ -2,9 +2,9 @@
 
 [![Go](https://github.com/rllko/httpfromtcp/actions/workflows/go.yml/badge.svg)](https://github.com/rllko/httpfromtcp/actions/workflows/go.yml)
 
-An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go standard library. It has no external dependencies.
+An HTTP/1.1 server that runs on raw TCP sockets. It uses only the Go standard library and has no external dependencies.
 
-> **Note:** This is a project for study. Do not use this server in production.
+> **Note:** This is a study project. Do not run this server in production.
 
 ## Contents
 
@@ -21,26 +21,26 @@ An HTTP/1.1 server that runs on raw TCP sockets. The project uses only the Go st
   - [The parser state machine](#the-parser-state-machine)
   - [The parser](#the-parser)
   - [The router](#the-router)
-	- [Route errors](#route-errors)
-	- [Error messages](#error-messages)
+    - [Route errors](#route-errors)
+    - [Error messages](#error-messages)
   - [Chunked transfer encoding](#chunked-transfer-encoding)
-  - [Packages](#packages)
-  - [Handler interface](#the-servers-handler-interface)
+  - [The server's handler interface](#the-servers-handler-interface)
   - [Middleware](#middleware)
   - [Timeouts](#timeouts)
   - [Shutdown](#shutdown)
   - [Limits](#limits)
   - [Framing rules](#framing-rules)
   - [Safe response defaults](#safe-response-defaults)
+  - [Packages](#packages)
 - [Run the tests](#run-the-tests)
 - [AI usage](#ai-usage)
 - [References](#references)
 
 ## What the project does
 
-The server reads bytes from a TCP connection. The parser changes these bytes into an HTTP request. The router finds the correct handler for the request. The handler writes an HTTP response back to the connection.
+The server reads bytes from a TCP connection, a parser turns those bytes into an HTTP request, a router finds the handler that matches it, and the handler writes an HTTP response back to the connection.
 
-The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A request can come in many small reads. The parser keeps its state between reads and continues where it stopped.
+The parser obeys RFC 9110 and RFC 9112, and it accepts data in parts. A request can arrive across many small reads: the parser keeps its state between them and resumes where it stopped.
 
 ## Features
 
@@ -58,7 +58,7 @@ The parser obeys RFC 9110 and RFC 9112. The parser accepts data in parts. A requ
 - Registration errors that keep the method, the pattern, and the position of the fault
 - Error messages with a source line and a `^` marker, in the style of the Rust compiler
 - Read and write deadlines, with a `408` response for a client that is too slow
-- Two methods to stop: an immediate `Close` and a `Shutdown` with a limit of time
+- Two ways to stop: an immediate `Close` and a `Shutdown` with a time limit
 - Eight configurable size limits, with `413`, `414`, and `431` responses
 - Framing rules that reject `Transfer-Encoding` with `Content-Length` (RFC 9112 §6.1)
 
@@ -86,7 +86,7 @@ Run this command:
 go run ./cmd/httpserver
 ```
 
-The server starts on port 42069. Send a request to make sure that the server operates correctly:
+The server starts on port 42069. Send a request to confirm it is running:
 
 ```sh
 curl http://localhost:42069/
@@ -115,13 +115,12 @@ func main() {
 		w.Header().Set("Content-type", "text/plain")
 		w.WriteBody([]byte("hello"))
 	}).
-	Get("/users/{id}", func(w response.Writer, req *request.Request) {
-		id, _ := req.PathValue("id")
-		w.WriteJSON(map[string]any{"id": id}, response.StatusOK)
-	})
+		Get("/users/{id}", func(w response.Writer, req *request.Request) {
+			id, _ := req.PathValue("id")
+			w.WriteJSON(map[string]any{"id": id}, response.StatusOK)
+		})
 
-
-	// the router collects the registration errors. Examine them before you listen.
+	// The router collects registration errors. Examine them before you listen.
 	if errs := r.Err(); len(errs) > 0 {
 		for _, err := range errs {
 			log.Println(err)
@@ -138,9 +137,7 @@ func main() {
 }
 ```
 
-The writer buffers headers. Set them in any order; the first `WriteBody`,
-`WriteHeaders`, or `Error` call commits the status line and the header block.
-A body write with nothing committed sends `200 OK`.
+The writer buffers headers, so you can set them in any order. The first `WriteBody`, `WriteHeaders`, or `Error` call commits the status line and the header block. A body write with nothing committed sends `200 OK`.
 
 ## Architecture
 
@@ -171,7 +168,7 @@ flowchart TD
 
 ### The parser state machine
 
-Each state consumes the bytes it can and reports how many. The caller keeps the rest for the next read. This is how one request can arrive in many small pieces.
+Each state consumes the bytes it can and reports how many. The caller keeps the rest for the next read, which is how one request can arrive in many small pieces.
 
 ```mermaid
 stateDiagram-v2
@@ -199,9 +196,9 @@ stateDiagram-v2
 
 The parser is a state machine with these states: request line, headers, body, done, error.
 
-The parser accepts partial data. Each call to `parse` consumes the bytes that make complete parts. The parser returns the count of bytes that it consumed. The caller sends the bytes that remain in the next call.
+It accepts partial data. Each call to `parse` consumes the bytes that make complete parts and returns the count of bytes it consumed; the caller sends the remaining bytes in the next call.
 
-The parser rejects these inputs and the server sends a `400` response:
+The parser rejects a request at the first sign of an ambiguous message, rather than trying to make sense of it later. HTTP/1.1 allows many message forms that two servers can read in two different ways, and that gap is where request smuggling lives. These inputs produce a `400` response:
 
 - A malformed request line
 - A method that is not a valid token
@@ -213,9 +210,9 @@ The parser rejects these inputs and the server sends a `400` response:
 - A request without a `Host` header, or with two `Host` headers
 - A `Host` header value that is not a valid host
 
-The read buffer grows when a request is larger than its initial size. A large request does not stop the parser.
+The read buffer grows when a request is larger than its initial size, so a large request does not stop the parser.
 
-The server sends a `501` response for a `Transfer-Encoding` value that it does not know. The server accepts `chunked`. The server sends a `400` response if `chunked` is not the last coding, or if `chunked` occurs two times.
+The server sends a `501` response for a `Transfer-Encoding` value it does not know. It accepts `chunked`, and sends a `400` response if `chunked` is not the last coding, or if `chunked` occurs two times.
 
 ### The router
 
@@ -241,53 +238,43 @@ The router obeys these rules:
 
 `Lookup` returns one of two errors when it does not find a handler. `ErrNotFound` means no method has the path (404). `ErrMethodNotAllowed` means a different method has the path (405). The `Allowed` function lists the methods for the `Allow` header of a 405 response.
 
-Handlers read captured segments with `req.PathValue(name)`. The values are stored on the request, so concurrent requests never share them. The router
-writes them just before it calls the handler.
+Handlers read captured segments with `req.PathValue(name)`. The values are stored on the request, so concurrent requests never share them; the router writes them just before it calls the handler.
 
-The router is the server's handler. `Router.ServeHTTP` calls the middleware chain. The last element in the chain is `routeHTTP`. This method looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler. On `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
+The router is the server's handler. `Router.ServeHTTP` calls the middleware chain, and the last element in the chain is `routeHTTP`, which looks the route up, binds the parameters, and calls the matched handler. On `ErrNotFound` it calls the 404 handler. On `ErrMethodNotAllowed` it sets the `Allow` header and calls the 405 handler.
 
 An application replaces either page with `r.NotFound(h)` and `r.MethodNotAllowed(h)`. Neither chains — a fallback is not a route. When you set neither, the router serves its own HTML pages. The `Allow` header is set by the router before it calls the 405 handler, so a replacement page cannot omit it.
 
-`Get`, `Post`, `Put`, `Patch`, and `Delete` return the router so calls chain.
-They do not return an error. Registration errors collect in the router; call
-`Err()` before you start the listener.
+`Get`, `Post`, `Put`, `Patch`, and `Delete` return the router so calls chain. They do not return an error; registration errors collect in the router, so call `Err()` before you start the listener.
 
 The router also obeys these fixed decisions:
+
 - `/a` and `/a/` are different paths. The router does not remove slashes.
 - A param does not match an empty segment.
 - A wildcard needs the slash: `/files/*path` matches `/files/` but not `/files`.
 - Letter case is not important in a static segment. A param value and a wildcard value keep their letter case.
 
-The router is a trie. Each node in the trie is one path segment. Two index types can hold the static segments of a node: a Go map (`New`) or a table that uses a polynomial rolling hash (`NewHashed`). When two hashes are equal, the table compares the full strings. This step prevents errors from hash collisions.
+Underneath, the router is a trie, and each node in the trie is one path segment. Two index types can hold the static segments of a node: a Go map (`New`) or a table that uses a polynomial rolling hash (`NewHashed`). When two hashes are equal, the table compares the full strings, which prevents errors from hash collisions.
 
-### Route errors
+#### Route errors
 
-`Register` gives an error of the type `RouteError` when a pattern is not correct.
-The error keeps six values: the sentinel error, the method, the pattern, the start
-offset, the end offset, and a help text.
+`Register` gives an error of the type `RouteError` when a pattern is not correct. The error keeps six values: the sentinel error, the method, the pattern, the start offset, the end offset, and a help text.
 
-The two offsets are byte positions in the pattern. `Register` calculates them while
-it walks the segments. It does not search the pattern a second time. A pattern that
-repeats a segment gets the correct position.
+The two offsets are byte positions in the pattern. `Register` calculates them while it walks the segments, so it does not search the pattern a second time, and a pattern that repeats a segment gets the correct position.
 
-`RouteError` has an `Unwrap` method. Thus `errors.Is` finds the sentinel through the
-wrapper, and the code that examines the sentinels does not change:
+`RouteError` has an `Unwrap` method, so `errors.Is` finds the sentinel through the wrapper and the code that examines the sentinels does not change:
 
 ```go
 err := r.Register("GET", "/files/*path/edit", h)
 errors.Is(err, router.ErrWildcardNotLast) // true
 ```
 
-`Error` gives one line of text. Use this line in a log file. The `diagnostic`
-package makes the large block. See the next section.
+`Error` gives one line of text — use that in a log file. The `diagnostic` package makes the large block, described in the next section.
 
-`Err` gives all the errors that the router collected. Use `errors.AsType` to
-separate a `RouteError` from a different error.
+`Err` gives all the errors that the router collected. Use `errors.AsType` to separate a `RouteError` from a different error.
 
-### Error messages
+#### Error messages
 
-The `internal/diagnostic` package writes an error message in the style of the Rust
-compiler:
+The `internal/diagnostic` package writes an error message in the style of the Rust compiler:
 
 ```
 error: wildcard segment must be last
@@ -299,36 +286,27 @@ error: wildcard segment must be last
   = help: wildcard segments must be the final segment
 ```
 
-A `Diagnostic` value holds the message, the source line, the two offsets, the file
-name, the line number, and the help text. The `Render` method makes the block.
+A `Diagnostic` value holds the message, the source line, the two offsets, the file name, the line number, and the help text. The `Render` method makes the block.
 
-The `^` characters show the part of the pattern that has the fault. The package
-calculates their position from the two offsets. The gutter has the same width on
-each line. Thus the `^` characters stay below the correct characters.
+The `^` characters show the part of the pattern that has the fault, and the package calculates their position from the two offsets. The gutter has the same width on each line, so the `^` characters stay below the correct characters.
 
-The `Underline` function limits the two offsets to the length of the source line.
-A negative offset, an offset after the end of the line, and an end offset before the
-start offset are all safe. The function does not stop the program.
+The `Underline` function limits the two offsets to the length of the source line. A negative offset, an offset after the end of the line, and an end offset before the start offset are all safe; the function does not stop the program.
 
-The file name and the line number show the position of the call to `Get`, `Post`,
-`Put`, `Patch`, or `Delete`. The router finds them with `runtime.Caller`. The line
-number is available. The column number is not available, because only the Go
-compiler reads the source text.
+The file name and the line number show the position of the call to `Get`, `Post`, `Put`, `Patch`, or `Delete`. The router finds them with `runtime.Caller`. The line number is available; the column number is not, because only the Go compiler reads the source text.
 
-The `-->` line and the `= help:` line are optional. `Render` omits a line when its
-value is empty.
+The `-->` line and the `= help:` line are optional. `Render` omits a line when its value is empty.
 
 ### Chunked transfer encoding
 
 The server reads and writes chunked bodies.
 
-Each chunk has a hexadecimal size line, the data, and a CRLF. A chunk of size zero ends the body. Trailer fields can follow the last chunk. An empty line ends the trailer section.
+Each chunk has a hexadecimal size line, the data, and a CRLF. A chunk of size zero ends the body. Trailer fields can follow the last chunk, and an empty line ends the trailer section.
 
-The decoder is a state machine with four states: chunk size, chunk data, chunk CRLF, and trailers. The decoder continues across split reads. A read can stop at any byte, also in the middle of a size line or in the middle of the data.
+The decoder is a state machine with four states: chunk size, chunk data, chunk CRLF, and trailers. It continues across split reads, and a read can stop at any byte — also in the middle of a size line or in the middle of the data.
 
-The decoder removes chunk extensions from the size line. The decoder puts the decoded bytes in `Request.Body`. The decoder puts the trailer fields in `Request.Trailers`.
+The decoder removes chunk extensions from the size line, puts the decoded bytes in `Request.Body`, and puts the trailer fields in `Request.Trailers`.
 
-The response writer can write a chunked body. A chunked stream has two legal endings. Use one of them, not both:
+The response writer can write a chunked body. A chunked stream has two legal endings; use one of them, not both:
 
 ```go
 w.WriteChunkedBody(data)     // one chunk for each call; an empty slice does nothing
@@ -352,16 +330,13 @@ type Handler interface {
 }
 ```
 
-`server.Serve` takes a port and a `Handler`. `*router.Router` implements the
-interface, so an application registers its routes and passes the router:
+`server.Serve` takes a port and a `Handler`. `*router.Router` implements the interface, so an application registers its routes and passes the router:
 
 ```go
 srv, err := server.Serve(8080, r)
 ```
 
-A test that needs one handler and no route table uses `server.HandlerFunc`.
-The type is a function with the handler's shape, and its `ServeHTTP` method
-calls itself:
+A test that needs one handler and no route table uses `server.HandlerFunc`. The type is a function with the handler's shape, and its `ServeHTTP` method calls itself:
 
 ```go
 type HandlerFunc func(w response.Writer, req *request.Request)
@@ -371,17 +346,11 @@ func (f HandlerFunc) ServeHTTP(w response.Writer, r *request.Request) {
 }
 ```
 
-This is the same adapter that `http.HandlerFunc` uses in the standard library.
-A plain function becomes a `Handler` with a type conversion, not a new struct.
+This is the same adapter that `http.HandlerFunc` uses in the standard library: a plain function becomes a `Handler` with a type conversion, not a new struct.
 
-The server writes a response by itself in one case only: a request that the
-parser rejected. The server sends the status that the parser chose, `400` for
-a malformed request and `501` for a transfer coding it does not know.
+The server writes a response by itself in one case only — a request that the parser rejected. It then sends the status that the parser chose: `400` for a malformed request, `501` for a transfer coding it does not know.
 
-After a successful parse the handler owns the whole response: the status line,
-the headers, and the body. The server writes nothing after `ServeHTTP` returns.
-A second write would put a second response on the same connection. The server
-handles one request for each connection and then closes it.
+After a successful parse the handler owns the whole response: the status line, the headers, and the body. The server writes nothing after `ServeHTTP` returns, because a second write would put a second response on the same connection. The server handles one request for each connection and then closes it.
 
 ### Middleware
 
@@ -391,10 +360,7 @@ A middleware takes a handler and returns a handler of the same type:
 type Middleware func(next Handler) Handler
 ```
 
-The new handler runs code before it calls `next`. It also runs code after `next`
-returns. The code before `next` can reject a request. The code after `next` can
-examine the response. A middleware that does not call `next` ends the chain. No
-handler below it runs.
+The new handler runs code before it calls `next`, and it runs code after `next` returns. The code before `next` can reject a request; the code after `next` can examine the response. A middleware that does not call `next` ends the chain, and no handler below it runs.
 
 `Use` adds a middleware. `Build` makes the chain:
 
@@ -406,39 +372,25 @@ r.Use(recovery).
 	Build()
 ```
 
-The first `Use` wraps all the other middlewares. It reads the request first and
-the response last. `Build` folds the slice in reverse order to keep this order.
+The first `Use` wraps all the other middlewares, so it reads the request first and the response last. `Build` folds the slice in reverse order to keep this order.
 
-The chain wraps the dispatch of the router. The chain does not wrap each
-handler. `ServeHTTP` calls the chain. The last element in the chain is
-`routeHTTP`. This method looks the route up, binds the parameters, and calls the
-matched handler.
+The chain wraps the dispatch of the router, not each handler. `ServeHTTP` calls the chain, and the last element in the chain is `routeHTTP`, which looks the route up, binds the parameters, and calls the matched handler.
 
-The router has two methods for one reason. One method cannot be the entry point
-of the chain and also the last element of the chain. That is infinite recursion.
+The router has two methods for one reason: one method cannot be both the entry point of the chain and the last element of the chain. That is infinite recursion.
 
-The chain wraps the dispatch. This has three results:
+Wrapping the dispatch has three results:
 
-- A 404 response and a 405 response go through the chain. The lookup occurs in
-  the last element. A request that matches no route runs each middleware first.
-- A middleware applies to all the routes. You cannot apply a middleware to only
-  one route or to only one subtree.
-- A middleware does not know the matched route before it calls `next`. The
-  router binds the parameters below it. After `next` returns, `req.PathValue`
-  gives the values.
+- A 404 response and a 405 response go through the chain. The lookup occurs in the last element, so a request that matches no route runs each middleware first.
+- A middleware applies to all the routes. You cannot apply a middleware to only one route or to only one subtree.
+- A middleware does not know the matched route before it calls `next`, because the router binds the parameters below it. After `next` returns, `req.PathValue` gives the values.
 
-The router builds the chain one time, at start. Each connection shares the
-router. Thus you write to the router at setup, and you only read the router
-after that. `Use`, `NotFound`, and `MethodNotAllowed` after `Build` add an error
-to the router. They do not change the chain. Call `Err()` before you listen.
+The router builds the chain one time, at start, and each connection shares the router. You therefore write to the router at setup and only read it after that. `Use`, `NotFound`, and `MethodNotAllowed` after `Build` add an error to the router; they do not change the chain. Call `Err()` before you listen.
 
-A middleware that catches a panic must register the deferred function before it
-calls `next`. A direct call to `recover` gives nil. A panic in `next` also skips
-the lines after it:
+A middleware that catches a panic must register the deferred function before it calls `next`. A direct call to `recover` gives nil, and a panic in `next` also skips the lines after it:
 
 ```go
 func Recovery(next router.Handler) router.Handler {
-	return func(w *response.Writer, req *request.Request) {
+	return func(w response.Writer, req *request.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.Error(fmt.Sprintf("%v", rec), response.StatusInternalServerError, "text/plain")
@@ -453,128 +405,104 @@ func Recovery(next router.Handler) router.Handler {
 
 The server has two timeouts. `Serve` sets each one to 10 seconds.
 
-| Field          | What it limits                                                    |
-| -------------- | ----------------------------------------------------------------- |
+| Field          | What it limits                                                      |
+| -------------- | ------------------------------------------------------------------- |
 | `ReadTimeout`  | The time from the start of the connection to the end of the request |
-| `WriteTimeout` | The time from the end of the request to the end of the response    |
+| `WriteTimeout` | The time from the end of the request to the end of the response     |
 
-The server sets the read deadline before it reads the first byte. The parser stops
-when the client is too slow. The server then sends a `408` response. RFC 9110
-§15.5.9 gives this status.
+The server sets the read deadline before it reads the first byte. The parser stops when the client is too slow, and the server then sends a `408` response, the status given by RFC 9110 §15.5.9.
 
-The server sets the write deadline after the parse. Thus a slow upload does not use
-the write budget. But the write budget includes the time in the handler. A handler
-that waits 15 seconds for a different server loses its connection. The `net/http`
-package has the same behaviour with its `WriteTimeout` field.
+The server sets the write deadline after the parse, so a slow upload does not use the write budget. But that budget includes the time spent in the handler: a handler that waits 15 seconds for a different server loses its connection. The `net/http` package behaves the same way with its `WriteTimeout` field.
 
-A value of zero is not "no timeout". The server adds zero to the current time, and
-that deadline is already in the past. A `Server` that you make by hand, without the
-two fields, refuses each request immediately. `Serve` always sets both fields.
+A value of zero is not "no timeout". The server adds zero to the current time, and that deadline is already in the past, so a `Server` that you make by hand without the two fields refuses each request immediately. `Serve` always sets both.
 
-The two timeouts limit time. They do not limit memory. The limits below do that.
+The two timeouts limit time. They do not limit memory — the limits below do that.
 
 ### Shutdown
 
-The server has two methods to stop. They make different promises.
+The server has two methods to stop, and they make different promises.
 
-| Method            | Stops the listener | Cancels the requests | Waits                |
-| ----------------- | ------------------ | -------------------- | -------------------- |
-| `Close()`         | yes                | yes                  | no                   |
-| `Shutdown(ctx)`   | yes                | yes                  | yes, until `ctx` ends |
+| Method          | Stops the listener | Cancels the requests | Waits                 |
+| --------------- | ------------------ | -------------------- | --------------------- |
+| `Close()`       | yes                | yes                  | no                    |
+| `Shutdown(ctx)` | yes                | yes                  | yes, until `ctx` ends |
 
 `Close` stops the server immediately.
 
-`Shutdown` closes the listener first. Thus no new request starts. It then cancels
-the active requests and waits for them. If `ctx` ends first, `Shutdown` closes the
-connections that remain. A blocked read or write then stops with an error, and
-`Shutdown` gives the error from `ctx`.
+`Shutdown` closes the listener first, so no new request starts. It then cancels the active requests and waits for them. If `ctx` ends first, `Shutdown` closes the connections that remain: a blocked read or write then stops with an error, and `Shutdown` gives the error from `ctx`.
 
-`Shutdown` also returns when a handler ignores the cancellation. `Shutdown` does not
-stop the handler. It stops the wait.
+`Shutdown` also returns when a handler ignores the cancellation. It does not stop the handler; it stops the wait.
 
-The server keeps each active connection in a map. `Shutdown` uses this map when it
-must close the connections by force. A `sync.WaitGroup` counts the active requests.
+The server keeps each active connection in a map and uses that map when it must close connections by force. A `sync.WaitGroup` counts the active requests.
 
-The server attaches a context to the request before it calls the handler. A handler
-that does long work must examine this context.
+The server attaches a context to the request before it calls the handler. A handler that does long work must examine this context.
 
 ### Limits
 
-The `Limits` structure holds eight limits. `RequestFromReader` uses the values in
-`DefaultLimits`. `RequestFromReaderWithLimits` accepts different values.
+The `Limits` structure holds eight limits. `RequestFromReader` uses the values in `DefaultLimits`; `RequestFromReaderWithLimits` accepts different values.
 
-| Field           | Default | What it counts                          |
-| --------------- | ------- | --------------------------------------- |
-| `RequestLine`   | 8 KiB   | The bytes of the request line           |
-| `HeaderBytes`   | 8 KiB   | The bytes of all the header fields      |
-| `HeaderCount`   | 100     | The number of header fields             |
-| `BodyBytes`     | 10 MiB  | The bytes of the body                   |
-| `ChunkSizeLine` | 8 KiB   | The bytes of one chunk size line        |
-| `TrailerBytes`  | 8 KiB   | The bytes of all the trailer fields     |
-| `TrailerCount`  | 50      | The number of trailer fields            |
-| `ReadBuffer`    | 64 KiB  | The largest size of the read buffer     |
+| Field           | Default | What it counts                      |
+| --------------- | ------- | ----------------------------------- |
+| `RequestLine`   | 8 KiB   | The bytes of the request line       |
+| `HeaderBytes`   | 8 KiB   | The bytes of all the header fields  |
+| `HeaderCount`   | 100     | The number of header fields         |
+| `BodyBytes`     | 10 MiB  | The bytes of the body               |
+| `ChunkSizeLine` | 8 KiB   | The bytes of one chunk size line    |
+| `TrailerBytes`  | 8 KiB   | The bytes of all the trailer fields |
+| `TrailerCount`  | 50      | The number of trailer fields        |
+| `ReadBuffer`    | 64 KiB  | The largest size of the read buffer |
 
 A limit of zero removes that limit.
 
-The parser examines a limit before it keeps more bytes. Thus an incomplete request
-cannot use memory without a bound.
+The parser examines a limit before it keeps more bytes, so an incomplete request cannot use memory without a bound.
 
-| Limit that fails                          | Status |
-| ----------------------------------------- | ------ |
-| Request line                              | `414`  |
-| Header bytes, header count, read buffer   | `431`  |
-| Body, chunk size line, trailers           | `413`  |
+| Limit that fails                        | Status |
+| --------------------------------------- | ------ |
+| Request line                            | `414`  |
+| Header bytes, header count, read buffer | `431`  |
+| Body, chunk size line, trailers         | `413`  |
 
-Each limit has its own error value: `ErrorRequestLineTooLarge`,
-`ErrorHeadersTooLarge`, `ErrorBodyTooLarge`, `ErrorChunkSizeLineTooLarge`,
-`ErrorTrailersTooLarge`, and `ErrorRequestTooLarge`. Use `errors.Is` to separate a
-limit failure from bad syntax.
+Each limit has its own error value: `ErrorRequestLineTooLarge`, `ErrorHeadersTooLarge`, `ErrorBodyTooLarge`, `ErrorChunkSizeLineTooLarge`, `ErrorTrailersTooLarge`, and `ErrorRequestTooLarge`. Use `errors.Is` to separate a limit failure from bad syntax.
 
 ### Framing rules
 
-Ambiguous framing lets an attacker put two requests in one message. One server reads
-one request. A different server reads two. This attack is request smuggling. The
-server therefore rejects an ambiguous message before it reads one byte of the body.
+Ambiguous framing lets an attacker put two requests in one message: one server reads one request, a different server reads two. This attack is request smuggling. The server therefore rejects an ambiguous message before it reads one byte of the body.
 
-| Condition                                                | Status |
-| -------------------------------------------------------- | ------ |
-| `Transfer-Encoding` and `Content-Length` in one request   | `400`  |
-| Two `Content-Length` headers with different values        | `400`  |
-| A `Content-Length` value that is not a sequence of digits | `400`  |
-| `chunked` is not the last coding                          | `400`  |
-| `chunked` occurs two times                                | `400`  |
-| A transfer coding that the server does not know           | `501`  |
+| Condition                                                 | Status |
+| --------------------------------------------------------- | ------ |
+| `Transfer-Encoding` and `Content-Length` in one request    | `400`  |
+| Two `Content-Length` headers with different values         | `400`  |
+| A `Content-Length` value that is not a sequence of digits  | `400`  |
+| `chunked` is not the last coding                           | `400`  |
+| `chunked` occurs two times                                 | `400`  |
+| A transfer coding that the server does not know            | `501`  |
 
 RFC 9112 §6.1 gives the rule for the first row.
 
-The server reads one request for each connection. It then closes the connection.
-Keep-alive is a different project.
+The server reads one request for each connection and then closes it. Keep-alive is a different project.
 
 ### Safe response defaults
 
-The server writes `x-content-type-options: nosniff` with each error response. The
-browser then does not guess the type of the content.
+The server writes `x-content-type-options: nosniff` with each error response, so the browser does not guess the type of the content.
 
-Each error response has a `content-type`. The default value is
-`text/plain; charset=utf-8`.
+Each error response has a `content-type`. The default value is `text/plain; charset=utf-8`.
 
-The server does not write a `Server` header. That header gives the name of the
-software to an attacker. It gives nothing to the client.
+The server does not write a `Server` header. That header gives the name of the software to an attacker and gives nothing to the client.
 
 CORS and CSP are not in this server. They are policies of the application.
 
 ### Packages
 
-| Package             | What it contains                                        |
-| ------------------- | ------------------------------------------------------- |
-| `internal/request`  | The request parser and its state machine                |
-| `internal/headers`  | The header map, quoted-strings, and header parameters   |
-| `internal/url`      | Percent-decoding, the path/query split, host validation |
-| `internal/response` | The buffered response writer                            |
-| `internal/router`   | The trie router and the rolling hash                    |
-| `internal/server`   | The TCP listener and the handler interface              |
-| `cmd/httpserver`    | An example server                                       |
-| `internal/diagnostic` | The error blocks with a source line and a `^` marker  |
+| Package               | What it contains                                        |
+| --------------------- | ------------------------------------------------------- |
+| `internal/request`    | The request parser and its state machine                |
+| `internal/headers`    | The header map, quoted-strings, and header parameters   |
+| `internal/url`        | Percent-decoding, the path/query split, host validation |
+| `internal/response`   | The buffered response writer                            |
+| `internal/router`     | The trie router and the rolling hash                    |
+| `internal/server`     | The TCP listener and the handler interface              |
+| `internal/diagnostic` | The error blocks with a source line and a `^` marker    |
+| `cmd/httpserver`      | An example server                                       |
 
 ## Run the tests
 
@@ -600,15 +528,15 @@ All tests pass, also with the race detector.
 
 The test suite has these types of tests:
 
-- Split-read tests: each parser test runs with many read sizes, from 1 byte per read and up.
-- Malformed-input tests: each parser rejects bad input with an error, not with a panic.
-- End-to-end tests: a real TCP client sends a request and examines the raw response.
-- Differential tests: the map index and the hash index of the router must give equal answers.
-- A collision test: two different segments with equal hashes must route to their own handlers.
+- **Split-read tests:** each parser test runs with many read sizes, from 1 byte per read and up.
+- **Malformed-input tests:** each parser rejects bad input with an error, not with a panic.
+- **End-to-end tests:** a real TCP client sends a request and examines the raw response.
+- **Differential tests:** the map index and the hash index of the router must give equal answers.
+- **A collision test:** two different segments with equal hashes must route to their own handlers.
 
 ## AI usage
 
-This project is a study project. I wrote the code by hand. I used Claude as a tutor, not as a code generator.
+This is a study project. I wrote the code by hand and used Claude as a tutor, not as a code generator.
 
 **What the AI did:**
 
@@ -622,7 +550,7 @@ This project is a study project. I wrote the code by hand. I used Claude as a tu
 - It did not write the parser, the router, the response writer, or the tests.
 - Tool writes are disabled in my configuration. The AI cannot edit the files in this repository.
 
-**Why:** I want to learn the protocol at the byte level. Generated code does not teach that. Each bug in this repository is a bug that I found and corrected.
+**Why:** I want to learn the protocol at the byte level, and generated code does not teach that. Each bug in this repository is a bug that I found and corrected.
 
 ## References
 
